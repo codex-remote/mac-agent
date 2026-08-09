@@ -14,6 +14,10 @@ AI Coding Remote 的本地执行端。它主动连接 Relay，发现 Mac 上允�
 
 当前无鉴权、数据库、业务 Task、队列和多 Mac 路由。协议唯一版本为 `2.0`，不兼容已删除的 `1.0 run.*`、`--working-dir` 和 `run` 命令。
 
+## 发布状态
+
+当前为 **Unreleased**，尚未形成生产兼容基线。首个正式版本发布前允许直接进行破坏性调整，不提供旧协议、旧命令或旧配置兼容；所有重要变更记录在 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 环境
 
 - macOS
