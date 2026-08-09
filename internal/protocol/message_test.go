@@ -6,9 +6,9 @@ import (
 )
 
 func TestMessageRoundTrip(t *testing.T) {
-	original, err := NewMessage(TypeRunStart, "run-1", Sender{Kind: "user", ID: "local-user"}, RunStartPayload{
-		RunID:  "run-1",
-		Prompt: "fix the test",
+	original, err := NewMessage(TypeTurnStart, "trace-1", Sender{Kind: "user", ID: "local-user"}, TurnStartPayload{
+		ProjectID: "project-1",
+		Prompt:    "fix the test",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -22,11 +22,11 @@ func TestMessageRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := PayloadAs[RunStartPayload](decoded)
+	payload, err := PayloadAs[TurnStartPayload](decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.RunID != "run-1" || payload.Prompt != "fix the test" {
+	if payload.ProjectID != "project-1" || payload.Prompt != "fix the test" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 }
@@ -36,7 +36,7 @@ func TestDecodeRejectsUnsupportedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message.SpecVersion = "2.0"
+	message.SpecVersion = "1.0"
 	data, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)

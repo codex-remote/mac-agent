@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/ai-coding-remote/mac-agent/internal/agent"
+	"github.com/ai-coding-remote/mac-agent/internal/codexapp"
 	"github.com/ai-coding-remote/mac-agent/internal/config"
+	"github.com/ai-coding-remote/mac-agent/internal/inventory"
 	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	"github.com/ai-coding-remote/mac-agent/internal/relay"
 	"github.com/ai-coding-remote/mac-agent/internal/result"
-	"github.com/ai-coding-remote/mac-agent/internal/run"
 	"github.com/ai-coding-remote/mac-agent/internal/runner"
+	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
 	"github.com/ai-coding-remote/mac-agent/internal/workspace"
 )
 
@@ -37,8 +39,8 @@ func realMain(arguments []string) int {
 	switch arguments[0] {
 	case "serve":
 		return serve(arguments[1:])
-	case "run":
-		return runLocal(arguments[1:])
+	case "turn":
+		return turnLocal(arguments[1:])
 	case "version", "--version", "-version":
 		fmt.Println(version)
 		return 0
@@ -61,45 +63,60 @@ func serve(arguments []string) int {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	relayURL := flags.String("relay-url", base.RelayURL, "Relay WebSocket URL")
-	workingDir := flags.String("working-dir", base.WorkingDir, "fixed Git working directory")
+	workspaceRoots := stringListFlag{values: append([]string(nil), base.WorkspaceRoots...)}
+	flags.Var(&workspaceRoots, "workspace-root", "allowed root containing Git projects (repeatable)")
+	projectScanDepth := flags.Int("project-scan-depth", base.ProjectScanDepth, "maximum directory depth for project discovery")
 	codexBinary := flags.String("codex-binary", base.CodexBinary, "Codex CLI executable")
 	agentName := flags.String("name", base.AgentName, "Agent display name")
-	timeout := flags.Duration("timeout", base.RunTimeout, "maximum duration of one run")
+	timeout := flags.Duration("timeout", base.TurnTimeout, "maximum duration of one turn")
 	logLines := flags.Int("log-buffer-lines", base.LogBufferLines, "recent output lines retained in memory")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
 	base.RelayURL = *relayURL
-	base.WorkingDir = *workingDir
+	base.WorkspaceRoots = workspaceRoots.values
+	base.ProjectScanDepth = *projectScanDepth
 	base.CodexBinary = *codexBinary
 	base.AgentName = *agentName
-	base.RunTimeout = *timeout
+	base.TurnTimeout = *timeout
 	base.LogBufferLines = *logLines
 	if err := base.ValidateServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
 	}
-	resolver, err := workspace.NewFixed(base.WorkingDir)
+	catalog, err := workspace.NewCatalog(base.WorkspaceRoots, base.ProjectScanDepth)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
 		return 2
 	}
-	if _, err := resolver.Resolve(context.Background()); err != nil {
+	projects, err := catalog.List(context.Background())
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
+		return 2
+	}
+	if len(projects) == 0 {
+		fmt.Fprintln(os.Stderr, "workspace error: no Git projects found under workspace roots")
 		return 2
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	appServer, err := codexapp.StartProcess(ctx, base.CodexBinary, version, logger)
+	if err != nil {
+		logger.Error("Start Codex app-server", "error", err)
+		return 1
+	}
+	defer appServer.Close()
 	sender := protocol.Sender{Kind: "device", ID: "local-mac"}
-	controller := run.NewController(
-		runner.Codex{Binary: base.CodexBinary}, resolver, result.Collector{MaxDiffBytes: base.MaxDiffBytes},
-		base.RunTimeout, base.LogBufferLines, sender,
+	controller := turncontrol.NewController(
+		runner.AppServer{Client: appServer.Client}, catalog, result.Collector{MaxDiffBytes: base.MaxDiffBytes},
+		base.TurnTimeout, base.LogBufferLines, sender,
 	)
 	defer controller.Close()
+	projectInventory := inventory.New(catalog, appServer.Client)
 	client := relay.New(relay.Config{URL: base.RelayURL}, logger)
-	service := agent.NewService(ctx, base.AgentName, version, sender, controller, client.Publish)
+	service := agent.NewService(ctx, base.AgentName, version, sender, controller, projectInventory, client.Publish)
 	if err := client.Run(ctx, service.InitialMessages, service.Handle); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("Agent stopped", "error", err)
 		return 1
@@ -107,18 +124,18 @@ func serve(arguments []string) int {
 	return 0
 }
 
-func runLocal(arguments []string) int {
+func turnLocal(arguments []string) int {
 	base, err := config.FromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
 	}
-	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags := flag.NewFlagSet("turn", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	workingDir := flags.String("working-dir", base.WorkingDir, "fixed Git working directory")
+	projectDir := flags.String("project-dir", "", "Git project directory")
 	codexBinary := flags.String("codex-binary", base.CodexBinary, "Codex CLI executable")
 	prompt := flags.String("prompt", "", "development instruction")
-	timeout := flags.Duration("timeout", base.RunTimeout, "maximum run duration")
+	timeout := flags.Duration("timeout", base.TurnTimeout, "maximum turn duration")
 	logLines := flags.Int("log-buffer-lines", base.LogBufferLines, "recent output lines retained in memory")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
@@ -126,11 +143,11 @@ func runLocal(arguments []string) int {
 	if *prompt == "" && flags.NArg() > 0 {
 		*prompt = strings.Join(flags.Args(), " ")
 	}
-	base.WorkingDir = *workingDir
+	base.WorkspaceRoots = []string{*projectDir}
 	base.CodexBinary = *codexBinary
-	base.RunTimeout = *timeout
+	base.TurnTimeout = *timeout
 	base.LogBufferLines = *logLines
-	if err := base.ValidateRun(); err != nil {
+	if err := base.ValidateTurn(); err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
 	}
@@ -138,47 +155,53 @@ func runLocal(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "configuration error: prompt is required")
 		return 2
 	}
-	resolver, err := workspace.NewFixed(base.WorkingDir)
+	catalog, err := workspace.NewCatalog(base.WorkspaceRoots, 1)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	appServer, err := codexapp.StartProcess(ctx, base.CodexBinary, version, logger)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Codex app-server error:", err)
+		return 1
+	}
+	defer appServer.Close()
+	projects, err := catalog.List(ctx)
+	if err != nil || len(projects) != 1 {
+		fmt.Fprintln(os.Stderr, "project error: project-dir must be a Git repository")
+		return 2
+	}
 	sender := protocol.Sender{Kind: "device", ID: "local-mac"}
-	controller := run.NewController(
-		runner.Codex{Binary: base.CodexBinary}, resolver, result.Collector{MaxDiffBytes: base.MaxDiffBytes},
-		base.RunTimeout, base.LogBufferLines, sender,
+	controller := turncontrol.NewController(
+		runner.AppServer{Client: appServer.Client}, catalog, result.Collector{MaxDiffBytes: base.MaxDiffBytes},
+		base.TurnTimeout, base.LogBufferLines, sender,
 	)
 	defer controller.Close()
-	runID := protocol.NewID()
+	traceID := protocol.NewID()
 	events := make(chan protocol.Message, 256)
-	if err := controller.Start(ctx, runID, *prompt, func(message protocol.Message) { events <- message }); err != nil {
+	if err := controller.Start(ctx, traceID, protocol.TurnStartPayload{ProjectID: projects[0].ID, Prompt: *prompt}, func(message protocol.Message) { events <- message }); err != nil {
 		fmt.Fprintln(os.Stderr, "start error:", err)
 		return 1
 	}
-	interrupt := ctx.Done()
 	for {
-		select {
-		case message := <-events:
-			terminal, exitCode := printLocalEvent(message)
-			if terminal {
-				return exitCode
-			}
-		case <-interrupt:
-			_ = controller.Cancel(runID)
-			fmt.Fprintln(os.Stderr, "[mac-agent] stopping run...")
-			interrupt = nil
+		message := <-events
+		terminal, exitCode := printLocalEvent(message)
+		if terminal {
+			return exitCode
 		}
 	}
 }
 
 func printLocalEvent(message protocol.Message) (bool, int) {
 	switch message.Type {
-	case protocol.TypeRunStarted:
-		fmt.Fprintln(os.Stderr, "[mac-agent] run started")
-	case protocol.TypeRunOutput:
-		payload, err := protocol.PayloadAs[protocol.RunOutputPayload](message)
+	case protocol.TypeTurnStarted:
+		payload, _ := protocol.PayloadAs[protocol.TurnStartedPayload](message)
+		fmt.Fprintf(os.Stderr, "[mac-agent] turn started: thread=%s turn=%s\n", payload.ThreadID, payload.TurnID)
+	case protocol.TypeTurnOutput:
+		payload, err := protocol.PayloadAs[protocol.TurnOutputPayload](message)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decode output:", err)
 			return false, 0
@@ -188,8 +211,8 @@ func printLocalEvent(message protocol.Message) (bool, int) {
 		} else {
 			fmt.Fprint(os.Stdout, payload.Text)
 		}
-	case protocol.TypeRunCompleted:
-		payload, err := protocol.PayloadAs[protocol.RunCompletedPayload](message)
+	case protocol.TypeTurnCompleted:
+		payload, err := protocol.PayloadAs[protocol.TurnCompletedPayload](message)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decode completion:", err)
 			return true, 1
@@ -205,13 +228,13 @@ func printLocalEvent(message protocol.Message) (bool, int) {
 			fmt.Fprintf(os.Stdout, "\nGit diff:\n%s\n", payload.Diff)
 		}
 		return true, 0
-	case protocol.TypeRunFailed:
-		payload, _ := protocol.PayloadAs[protocol.RunFailedPayload](message)
+	case protocol.TypeTurnFailed:
+		payload, _ := protocol.PayloadAs[protocol.TurnFailedPayload](message)
 		data, _ := json.Marshal(payload)
-		fmt.Fprintf(os.Stderr, "\n[mac-agent] run failed: %s\n", data)
+		fmt.Fprintf(os.Stderr, "\n[mac-agent] turn failed: %s\n", data)
 		return true, 1
-	case protocol.TypeRunCancelled:
-		fmt.Fprintln(os.Stderr, "\n[mac-agent] run cancelled")
+	case protocol.TypeTurnInterrupted:
+		fmt.Fprintln(os.Stderr, "\n[mac-agent] turn interrupted")
 		return true, 130
 	}
 	return false, 0
@@ -222,11 +245,23 @@ func printUsage() {
 
 Usage:
   mac-agent serve [flags]
-  mac-agent run --working-dir DIR --prompt TEXT [flags]
+  mac-agent turn --project-dir DIR --prompt TEXT [flags]
   mac-agent version
 
 Commands:
-  serve    Connect to Relay and execute incoming Run messages
-  run      Execute one local Codex Run without Relay
+  serve    Connect to Relay and control Codex projects and turns
+  turn     Execute one local Codex turn without Relay
   version  Print the build version`)
+}
+
+type stringListFlag struct{ values []string }
+
+func (f *stringListFlag) String() string { return strings.Join(f.values, ",") }
+func (f *stringListFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("workspace root cannot be empty")
+	}
+	f.values = append(f.values, value)
+	return nil
 }

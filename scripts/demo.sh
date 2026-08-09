@@ -62,8 +62,8 @@ go build -C "$repo_root" -o "$agent_binary" ./cmd/agent
 prompt='Implement the greeting requirement in this repository. Greet must trim surrounding whitespace. For a blank or whitespace-only name it must return "Hello, stranger!". For a non-empty name it must greet the trimmed name. Keep the existing public API, make the smallest focused change, run go test ./..., and do not commit the result.'
 
 echo "Running real Codex through mac-agent..."
-"$agent_binary" run \
-	--working-dir "$project_dir" \
+"$agent_binary" turn \
+	--project-dir "$project_dir" \
 	--timeout 10m \
 	--prompt "$prompt"
 

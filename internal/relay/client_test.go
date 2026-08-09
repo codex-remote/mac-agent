@@ -33,7 +33,7 @@ func TestClientExchangesMessages(t *testing.T) {
 			serverError <- fmt.Errorf("unexpected hello %q: %v", hello.Type, err)
 			return
 		}
-		start, err := protocol.NewMessage(protocol.TypeRunStart, "run-1", protocol.Sender{Kind: "user", ID: "local"}, protocol.RunStartPayload{RunID: "run-1", Prompt: "test"})
+		start, err := protocol.NewMessage(protocol.TypeTurnStart, "trace-1", protocol.Sender{Kind: "user", ID: "local"}, protocol.TurnStartPayload{ProjectID: "project-1", Prompt: "test"})
 		if err != nil {
 			serverError <- err
 			return
@@ -48,7 +48,7 @@ func TestClientExchangesMessages(t *testing.T) {
 			return
 		}
 		responseMessage, err := protocol.Decode(data)
-		if err != nil || responseMessage.Type != protocol.TypeRunRejected {
+		if err != nil || responseMessage.Type != protocol.TypeTurnRejected {
 			serverError <- fmt.Errorf("unexpected response %q: %v", responseMessage.Type, err)
 			return
 		}
@@ -66,7 +66,7 @@ func TestClientExchangesMessages(t *testing.T) {
 			hello, _ := protocol.NewMessage(protocol.TypeAgentHello, "agent", protocol.Sender{Kind: "device", ID: "mac"}, protocol.AgentHelloPayload{Name: "mac", Version: "test", Status: protocol.StatusIdle})
 			return []protocol.Message{hello}
 		}, func(_ context.Context, message protocol.Message) {
-			rejected, _ := protocol.NewMessage(protocol.TypeRunRejected, message.TraceID, protocol.Sender{Kind: "device", ID: "mac"}, protocol.RunRejectedPayload{RunID: "run-1", Code: "TEST"})
+			rejected, _ := protocol.NewMessage(protocol.TypeTurnRejected, message.TraceID, protocol.Sender{Kind: "device", ID: "mac"}, protocol.TurnRejectedPayload{Code: "TEST"})
 			_ = client.Publish(rejected)
 		})
 	}()

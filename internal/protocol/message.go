@@ -9,28 +9,32 @@ import (
 	"time"
 )
 
-const SpecVersion = "1.0"
+const SpecVersion = "2.0"
 
 const (
-	TypeAgentHello   = "agent.hello"
-	TypeAgentStatus  = "agent.status"
-	TypeRunStart     = "run.start"
-	TypeRunStarted   = "run.started"
-	TypeRunOutput    = "run.output"
-	TypeRunSnapshot  = "run.snapshot"
-	TypeRunCancel    = "run.cancel"
-	TypeRunCancelled = "run.cancelled"
-	TypeRunCompleted = "run.completed"
-	TypeRunFailed    = "run.failed"
-	TypeRunRejected  = "run.rejected"
+	TypeAgentHello      = "agent.hello"
+	TypeAgentStatus     = "agent.status"
+	TypeProjectList     = "project.list"
+	TypeProjectSnapshot = "project.snapshot"
+	TypeThreadList      = "thread.list"
+	TypeThreadSnapshot  = "thread.snapshot"
+	TypeTurnStart       = "turn.start"
+	TypeTurnStarted     = "turn.started"
+	TypeTurnOutput      = "turn.output"
+	TypeTurnSnapshot    = "turn.snapshot"
+	TypeTurnInterrupt   = "turn.interrupt"
+	TypeTurnInterrupted = "turn.interrupted"
+	TypeTurnCompleted   = "turn.completed"
+	TypeTurnFailed      = "turn.failed"
+	TypeTurnRejected    = "turn.rejected"
 )
 
 const (
-	StatusIdle      = "idle"
-	StatusRunning   = "running"
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
-	StatusCancelled = "cancelled"
+	StatusIdle        = "idle"
+	StatusRunning     = "running"
+	StatusCompleted   = "completed"
+	StatusFailed      = "failed"
+	StatusInterrupted = "interrupted"
 )
 
 type Sender struct {
@@ -55,41 +59,91 @@ type AgentHelloPayload struct {
 }
 
 type AgentStatusPayload struct {
-	Status string `json:"status"`
-	RunID  string `json:"run_id,omitempty"`
+	Status    string `json:"status"`
+	ProjectID string `json:"project_id,omitempty"`
+	ThreadID  string `json:"thread_id,omitempty"`
+	TurnID    string `json:"turn_id,omitempty"`
 }
 
-type RunStartPayload struct {
-	RunID  string `json:"run_id"`
-	TaskID string `json:"task_id,omitempty"`
-	Prompt string `json:"prompt"`
+type ProjectListPayload struct{}
+
+type Project struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Path        string     `json:"path"`
+	ThreadCount int        `json:"thread_count"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
 }
 
-type RunCancelPayload struct {
-	RunID string `json:"run_id"`
+type ProjectSnapshotPayload struct {
+	Projects []Project `json:"projects"`
 }
 
-type RunStartedPayload struct {
-	RunID     string    `json:"run_id"`
+type ThreadListPayload struct {
+	ProjectID string `json:"project_id"`
+}
+
+type Thread struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Title     string    `json:"title"`
+	Preview   string    `json:"preview"`
+	Status    string    `json:"status"`
+	Source    string    `json:"source"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ThreadSnapshotPayload struct {
+	ProjectID string   `json:"project_id"`
+	Threads   []Thread `json:"threads"`
+}
+
+type TurnStartPayload struct {
+	ProjectID string `json:"project_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
+	Prompt    string `json:"prompt"`
+}
+
+type TurnStartedPayload struct {
+	ProjectID string    `json:"project_id"`
+	ThreadID  string    `json:"thread_id"`
+	TurnID    string    `json:"turn_id"`
 	StartedAt time.Time `json:"started_at"`
 }
 
-type RunOutputPayload struct {
-	RunID  string `json:"run_id"`
-	Stream string `json:"stream"`
-	Text   string `json:"text"`
+type TurnOutputPayload struct {
+	ProjectID string `json:"project_id"`
+	ThreadID  string `json:"thread_id"`
+	TurnID    string `json:"turn_id"`
+	Stream    string `json:"stream"`
+	Text      string `json:"text"`
 }
 
-type RunSnapshotPayload struct {
-	RunID        string    `json:"run_id,omitempty"`
+type TurnSnapshotPayload struct {
+	ProjectID    string    `json:"project_id"`
+	ThreadID     string    `json:"thread_id"`
+	TurnID       string    `json:"turn_id"`
 	Status       string    `json:"status"`
-	StartedAt    time.Time `json:"started_at,omitempty"`
-	RecentOutput []string  `json:"recent_output,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	RecentOutput []string  `json:"recent_output"`
 }
 
-type RunCompletedPayload struct {
-	RunID         string   `json:"run_id"`
-	ExitCode      int      `json:"exit_code"`
+type TurnInterruptPayload struct {
+	ThreadID string `json:"thread_id"`
+	TurnID   string `json:"turn_id"`
+}
+
+type TurnInterruptedPayload struct {
+	ProjectID  string `json:"project_id"`
+	ThreadID   string `json:"thread_id"`
+	TurnID     string `json:"turn_id"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+type TurnCompletedPayload struct {
+	ProjectID     string   `json:"project_id"`
+	ThreadID      string   `json:"thread_id"`
+	TurnID        string   `json:"turn_id"`
 	DurationMS    int64    `json:"duration_ms"`
 	Summary       string   `json:"summary"`
 	ChangedFiles  []string `json:"changed_files"`
@@ -97,21 +151,16 @@ type RunCompletedPayload struct {
 	DiffTruncated bool     `json:"diff_truncated"`
 }
 
-type RunFailedPayload struct {
-	RunID      string `json:"run_id"`
+type TurnFailedPayload struct {
+	ProjectID  string `json:"project_id,omitempty"`
+	ThreadID   string `json:"thread_id,omitempty"`
+	TurnID     string `json:"turn_id,omitempty"`
 	Code       string `json:"code"`
 	Message    string `json:"message"`
-	ExitCode   int    `json:"exit_code,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
-type RunCancelledPayload struct {
-	RunID      string `json:"run_id"`
-	DurationMS int64  `json:"duration_ms"`
-}
-
-type RunRejectedPayload struct {
-	RunID   string `json:"run_id,omitempty"`
+type TurnRejectedPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
