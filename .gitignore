@@ -1,0 +1,15 @@
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+/bin/
+/build/
+/dist/
+/tmp/
+/coverage/
+coverage.out
+*.test
+*.prof
+mac-agent
