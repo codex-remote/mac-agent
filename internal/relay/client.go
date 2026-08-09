@@ -16,6 +16,8 @@ import (
 
 var ErrOutboundQueueFull = errors.New("Relay outbound queue is full")
 
+const defaultMaxMessageBytes = 256 * 1024
+
 type Config struct {
 	URL             string
 	MaxMessageBytes int64
@@ -37,7 +39,7 @@ type Client struct {
 
 func New(config Config, logger *slog.Logger) *Client {
 	if config.MaxMessageBytes < 1 {
-		config.MaxMessageBytes = 64 * 1024
+		config.MaxMessageBytes = defaultMaxMessageBytes
 	}
 	if config.QueueSize < 1 {
 		config.QueueSize = 128

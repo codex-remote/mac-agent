@@ -86,6 +86,13 @@ func TestClientExchangesMessages(t *testing.T) {
 	}
 }
 
+func TestClientDefaultMessageLimitAccommodatesDiffResult(t *testing.T) {
+	client := New(Config{}, nil)
+	if client.config.MaxMessageBytes != 256*1024 {
+		t.Fatalf("MaxMessageBytes = %d", client.config.MaxMessageBytes)
+	}
+}
+
 func writeServerMessage(ctx context.Context, connection *websocket.Conn, message protocol.Message) error {
 	data, err := jsonMarshal(message)
 	if err != nil {
