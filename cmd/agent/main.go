@@ -25,7 +25,7 @@ import (
 	"github.com/ai-coding-remote/mac-agent/internal/workspace"
 )
 
-var version = "dev"
+var version = "0.0.1"
 
 func main() {
 	os.Exit(realMain(os.Args[1:]))
@@ -64,8 +64,8 @@ func serve(arguments []string) int {
 	flags.SetOutput(os.Stderr)
 	relayURL := flags.String("relay-url", base.RelayURL, "Relay WebSocket URL")
 	workspaceRoots := stringListFlag{values: append([]string(nil), base.WorkspaceRoots...)}
-	flags.Var(&workspaceRoots, "workspace-root", "allowed root containing Git projects (repeatable)")
-	projectScanDepth := flags.Int("project-scan-depth", base.ProjectScanDepth, "maximum directory depth for project discovery")
+	flags.Var(&workspaceRoots, "workspace-root", "allowed root for Codex Desktop projects (repeatable)")
+	codexStateFile := flags.String("codex-state-file", base.CodexStateFile, "Codex Desktop global state JSON file")
 	codexBinary := flags.String("codex-binary", base.CodexBinary, "Codex CLI executable")
 	agentName := flags.String("name", base.AgentName, "Agent display name")
 	timeout := flags.Duration("timeout", base.TurnTimeout, "maximum duration of one turn")
@@ -75,7 +75,7 @@ func serve(arguments []string) int {
 	}
 	base.RelayURL = *relayURL
 	base.WorkspaceRoots = workspaceRoots.values
-	base.ProjectScanDepth = *projectScanDepth
+	base.CodexStateFile = *codexStateFile
 	base.CodexBinary = *codexBinary
 	base.AgentName = *agentName
 	base.TurnTimeout = *timeout
@@ -84,7 +84,7 @@ func serve(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
 	}
-	catalog, err := workspace.NewCatalog(base.WorkspaceRoots, base.ProjectScanDepth)
+	catalog, err := workspace.NewCodexCatalog(base.WorkspaceRoots, base.CodexStateFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
 		return 2
@@ -95,7 +95,7 @@ func serve(arguments []string) int {
 		return 2
 	}
 	if len(projects) == 0 {
-		fmt.Fprintln(os.Stderr, "workspace error: no Git projects found under workspace roots")
+		fmt.Fprintln(os.Stderr, "workspace error: no Codex Desktop projects found within workspace roots")
 		return 2
 	}
 
@@ -116,7 +116,13 @@ func serve(arguments []string) int {
 	defer controller.Close()
 	projectInventory := inventory.New(catalog, appServer.Client)
 	client := relay.New(relay.Config{URL: base.RelayURL}, logger)
-	service := agent.NewService(ctx, base.AgentName, version, sender, controller, projectInventory, client.Publish)
+	capabilities := protocol.AgentCapabilitiesPayload{
+		Restricted: true, SandboxMode: codexapp.RemoteSandboxMode, ApprovalPolicy: codexapp.RemoteApprovalPolicy,
+		WritableScope: "selected_project", NetworkAccess: false, CanRequestApproval: false,
+		HostProcessControl: false, UserLibraryWrite: false, XcodeDeviceControl: false,
+		SupportsPermissionProfiles: true,
+	}
+	service := agent.NewService(ctx, base.AgentName, version, sender, capabilities, controller, projectInventory, client.Publish)
 	if err := client.Run(ctx, service.InitialMessages, service.Handle); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("Agent stopped", "error", err)
 		return 1
@@ -155,7 +161,7 @@ func turnLocal(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "configuration error: prompt is required")
 		return 2
 	}
-	catalog, err := workspace.NewCatalog(base.WorkspaceRoots, 1)
+	catalog, err := workspace.NewGitProjectCatalog(*projectDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
 		return 2
@@ -171,7 +177,7 @@ func turnLocal(arguments []string) int {
 	defer appServer.Close()
 	projects, err := catalog.List(ctx)
 	if err != nil || len(projects) != 1 {
-		fmt.Fprintln(os.Stderr, "project error: project-dir must be a Git repository")
+		fmt.Fprintln(os.Stderr, "project error: could not load project-dir")
 		return 2
 	}
 	sender := protocol.Sender{Kind: "device", ID: "local-mac"}
@@ -254,13 +260,20 @@ Commands:
   version  Print the build version`)
 }
 
-type stringListFlag struct{ values []string }
+type stringListFlag struct {
+	values   []string
+	explicit bool
+}
 
 func (f *stringListFlag) String() string { return strings.Join(f.values, ",") }
 func (f *stringListFlag) Set(value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("workspace root cannot be empty")
+	}
+	if !f.explicit {
+		f.values = nil
+		f.explicit = true
 	}
 	f.values = append(f.values, value)
 	return nil

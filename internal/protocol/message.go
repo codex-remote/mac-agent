@@ -12,21 +12,30 @@ import (
 const SpecVersion = "2.0"
 
 const (
-	TypeAgentHello      = "agent.hello"
-	TypeAgentStatus     = "agent.status"
-	TypeProjectList     = "project.list"
-	TypeProjectSnapshot = "project.snapshot"
-	TypeThreadList      = "thread.list"
-	TypeThreadSnapshot  = "thread.snapshot"
-	TypeTurnStart       = "turn.start"
-	TypeTurnStarted     = "turn.started"
-	TypeTurnOutput      = "turn.output"
-	TypeTurnSnapshot    = "turn.snapshot"
-	TypeTurnInterrupt   = "turn.interrupt"
-	TypeTurnInterrupted = "turn.interrupted"
-	TypeTurnCompleted   = "turn.completed"
-	TypeTurnFailed      = "turn.failed"
-	TypeTurnRejected    = "turn.rejected"
+	TypeAgentHello               = "agent.hello"
+	TypeAgentStatus              = "agent.status"
+	TypeAgentCapabilities        = "agent.capabilities"
+	TypeExecutionProfileList     = "execution.profile.list"
+	TypeExecutionProfileSnapshot = "execution.profile.snapshot"
+	TypeProjectList              = "project.list"
+	TypeProjectSnapshot          = "project.snapshot"
+	TypeThreadList               = "thread.list"
+	TypeThreadSnapshot           = "thread.snapshot"
+	TypeThreadRead               = "thread.read"
+	TypeThreadDetail             = "thread.detail"
+	TypeTurnStart                = "turn.start"
+	TypeTurnStarted              = "turn.started"
+	TypeTurnOutput               = "turn.output"
+	TypeTurnItemStarted          = "turn.item.started"
+	TypeTurnItemDelta            = "turn.item.delta"
+	TypeTurnItemDone             = "turn.item.completed"
+	TypeTurnSnapshot             = "turn.snapshot"
+	TypeTurnInterrupt            = "turn.interrupt"
+	TypeTurnInterrupted          = "turn.interrupted"
+	TypeTurnCompleted            = "turn.completed"
+	TypeTurnFailed               = "turn.failed"
+	TypeTurnRejected             = "turn.rejected"
+	TypeTurnAcknowledged         = "turn.acknowledged"
 )
 
 const (
@@ -65,6 +74,35 @@ type AgentStatusPayload struct {
 	TurnID    string `json:"turn_id,omitempty"`
 }
 
+type AgentCapabilitiesPayload struct {
+	Restricted                 bool   `json:"restricted"`
+	SandboxMode                string `json:"sandbox_mode"`
+	ApprovalPolicy             string `json:"approval_policy"`
+	WritableScope              string `json:"writable_scope"`
+	NetworkAccess              bool   `json:"network_access"`
+	CanRequestApproval         bool   `json:"can_request_approval"`
+	HostProcessControl         bool   `json:"host_process_control"`
+	UserLibraryWrite           bool   `json:"user_library_write"`
+	XcodeDeviceControl         bool   `json:"xcode_device_control"`
+	SupportsPermissionProfiles bool   `json:"supports_permission_profiles"`
+}
+
+type ExecutionProfileListPayload struct {
+	ProjectID string `json:"project_id"`
+}
+
+type ExecutionProfile struct {
+	ID          string `json:"id"`
+	Description string `json:"description,omitempty"`
+	Allowed     bool   `json:"allowed"`
+}
+
+type ExecutionProfileSnapshotPayload struct {
+	ProjectID        string             `json:"project_id"`
+	DefaultProfileID string             `json:"default_profile_id"`
+	Profiles         []ExecutionProfile `json:"profiles"`
+}
+
 type ProjectListPayload struct{}
 
 type Project struct {
@@ -84,13 +122,14 @@ type ThreadListPayload struct {
 }
 
 type Thread struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"project_id"`
-	Title     string    `json:"title"`
-	Preview   string    `json:"preview"`
-	Status    string    `json:"status"`
-	Source    string    `json:"source"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                   string    `json:"id"`
+	ProjectID            string    `json:"project_id"`
+	Title                string    `json:"title"`
+	Preview              string    `json:"preview"`
+	LatestMessagePreview string    `json:"latest_message_preview"`
+	Status               string    `json:"status"`
+	Source               string    `json:"source"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type ThreadSnapshotPayload struct {
@@ -98,10 +137,70 @@ type ThreadSnapshotPayload struct {
 	Threads   []Thread `json:"threads"`
 }
 
-type TurnStartPayload struct {
+type ThreadReadPayload struct {
 	ProjectID string `json:"project_id"`
-	ThreadID  string `json:"thread_id,omitempty"`
-	Prompt    string `json:"prompt"`
+	ThreadID  string `json:"thread_id"`
+}
+
+type ThreadDetailPayload struct {
+	ProjectID string       `json:"project_id"`
+	Thread    ThreadDetail `json:"thread"`
+	Truncated bool         `json:"truncated"`
+}
+
+type ThreadDetail struct {
+	ID        string              `json:"id"`
+	ProjectID string              `json:"project_id"`
+	Title     string              `json:"title"`
+	Preview   string              `json:"preview"`
+	Status    string              `json:"status"`
+	Source    string              `json:"source"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
+	Turns     []ThreadHistoryTurn `json:"turns"`
+}
+
+type ThreadHistoryTurn struct {
+	ID          string              `json:"id"`
+	Status      string              `json:"status"`
+	StartedAt   *time.Time          `json:"started_at,omitempty"`
+	CompletedAt *time.Time          `json:"completed_at,omitempty"`
+	DurationMS  *int64              `json:"duration_ms,omitempty"`
+	Error       string              `json:"error,omitempty"`
+	Items       []ThreadHistoryItem `json:"items"`
+	Truncated   bool                `json:"truncated"`
+}
+
+type ThreadHistoryItem struct {
+	ID         string             `json:"id"`
+	Type       string             `json:"type"`
+	Role       string             `json:"role,omitempty"`
+	Phase      string             `json:"phase,omitempty"`
+	Status     string             `json:"status,omitempty"`
+	Text       string             `json:"text,omitempty"`
+	Name       string             `json:"name,omitempty"`
+	Command    string             `json:"command,omitempty"`
+	CWD        string             `json:"cwd,omitempty"`
+	Output     string             `json:"output,omitempty"`
+	Path       string             `json:"path,omitempty"`
+	Query      string             `json:"query,omitempty"`
+	ExitCode   *int               `json:"exit_code,omitempty"`
+	DurationMS *int64             `json:"duration_ms,omitempty"`
+	Changes    []ThreadFileChange `json:"changes,omitempty"`
+	Truncated  bool               `json:"truncated"`
+}
+
+type ThreadFileChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Diff string `json:"diff,omitempty"`
+}
+
+type TurnStartPayload struct {
+	ProjectID           string `json:"project_id"`
+	ThreadID            string `json:"thread_id,omitempty"`
+	Prompt              string `json:"prompt"`
+	PermissionProfileID string `json:"permission_profile_id,omitempty"`
 }
 
 type TurnStartedPayload struct {
@@ -119,13 +218,42 @@ type TurnOutputPayload struct {
 	Text      string `json:"text"`
 }
 
+type TurnItemStartedPayload struct {
+	ProjectID string            `json:"project_id"`
+	ThreadID  string            `json:"thread_id"`
+	TurnID    string            `json:"turn_id"`
+	Sequence  int64             `json:"sequence"`
+	Item      ThreadHistoryItem `json:"item"`
+}
+
+type TurnItemDeltaPayload struct {
+	ProjectID string `json:"project_id"`
+	ThreadID  string `json:"thread_id"`
+	TurnID    string `json:"turn_id"`
+	Sequence  int64  `json:"sequence"`
+	ItemID    string `json:"item_id"`
+	Field     string `json:"field"`
+	Delta     string `json:"delta"`
+}
+
+type TurnItemCompletedPayload struct {
+	ProjectID string            `json:"project_id"`
+	ThreadID  string            `json:"thread_id"`
+	TurnID    string            `json:"turn_id"`
+	Sequence  int64             `json:"sequence"`
+	Item      ThreadHistoryItem `json:"item"`
+}
+
 type TurnSnapshotPayload struct {
-	ProjectID    string    `json:"project_id"`
-	ThreadID     string    `json:"thread_id"`
-	TurnID       string    `json:"turn_id"`
-	Status       string    `json:"status"`
-	StartedAt    time.Time `json:"started_at"`
-	RecentOutput []string  `json:"recent_output"`
+	ProjectID          string              `json:"project_id"`
+	ThreadID           string              `json:"thread_id"`
+	TurnID             string              `json:"turn_id"`
+	Status             string              `json:"status"`
+	StartedAt          time.Time           `json:"started_at"`
+	RecentOutput       []string            `json:"recent_output"`
+	LiveItems          []ThreadHistoryItem `json:"live_items,omitempty"`
+	LastSequence       int64               `json:"last_sequence,omitempty"`
+	LiveItemsTruncated bool                `json:"live_items_truncated,omitempty"`
 }
 
 type TurnInterruptPayload struct {
@@ -161,8 +289,16 @@ type TurnFailedPayload struct {
 }
 
 type TurnRejectedPayload struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code                 string                    `json:"code"`
+	Message              string                    `json:"message"`
+	RequiredCapabilities []string                  `json:"required_capabilities,omitempty"`
+	RecoveryAction       string                    `json:"recovery_action,omitempty"`
+	ExecutionContext     *AgentCapabilitiesPayload `json:"execution_context,omitempty"`
+}
+
+type TurnAcknowledgedPayload struct {
+	TurnID string `json:"turn_id"`
+	Status string `json:"status"`
 }
 
 func NewMessage(messageType, traceID string, sender Sender, payload any) (Message, error) {

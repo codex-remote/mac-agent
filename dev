@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd "$repo_dir/.." && pwd)"
+relay_run="$project_dir/relay-server/run"
+
+usage() {
+	echo "Usage: ./dev {debug|simulator|iphone}" >&2
+	echo "  debug      Manual/Apifox stack on port 18765" >&2
+	echo "  simulator  iPhone Simulator stack on port 18767" >&2
+	echo "  iphone     Physical iPhone stack on port 18768" >&2
+}
+
+if [[ "$#" -ne 1 ]]; then
+	usage
+	exit 2
+fi
+
+profile="$1"
+case "$profile" in
+debug)
+	relay_port="18765"
+	;;
+simulator)
+	relay_port="18767"
+	;;
+iphone)
+	relay_port="18768"
+	;;
+*)
+	usage
+	exit 2
+	;;
+esac
+
+relay_url="ws://127.0.0.1:$relay_port/ws/agent"
+run_dir="$repo_dir/.run/$profile"
+pid_file="$run_dir/mac-agent.pid"
+log_file="$run_dir/mac-agent.log"
+lock_dir="$run_dir/restart.lock"
+agent_binary="$repo_dir/bin/mac-agent"
+service_label="com.ai-coding-remote.mac-agent.$profile"
+service_target="gui/$(id -u)/$service_label"
+agent_name="leehoo-mac-$profile"
+
+resolve_codex_binary() {
+	local candidate
+	local resolved
+
+	canonicalize() {
+		local executable="$1"
+		local directory
+
+		directory="$(cd -P "$(dirname "$executable")" && pwd)" || return 1
+		executable="$directory/$(basename "$executable")"
+		while [[ -L "$executable" ]]; do
+			local target
+			target="$(readlink "$executable")" || return 1
+			if [[ "$target" = /* ]]; then
+				executable="$target"
+			else
+				executable="$(dirname "$executable")/$target"
+			fi
+			directory="$(cd -P "$(dirname "$executable")" && pwd)" || return 1
+			executable="$directory/$(basename "$executable")"
+		done
+		[[ -x "$executable" ]] || return 1
+		printf '%s\n' "$executable"
+	}
+
+	if [[ -n "${CODEX_BINARY:-}" ]]; then
+		candidate="$CODEX_BINARY"
+		[[ "$candidate" = /* ]] || candidate="$(command -v "$candidate" || true)"
+		if [[ -n "$candidate" ]] && resolved="$(canonicalize "$candidate")"; then
+			echo "$resolved"
+			return 0
+		fi
+		echo "CODEX_BINARY does not point to an executable: $CODEX_BINARY" >&2
+		return 1
+	fi
+
+	candidate="$(command -v codex || true)"
+	if [[ -n "$candidate" ]] && resolved="$(canonicalize "$candidate")"; then
+		echo "$resolved"
+		return 0
+	fi
+
+	for candidate in \
+		"/Applications/ChatGPT.app/Contents/Resources/codex" \
+		"/Applications/Codex.app/Contents/Resources/codex"; do
+		if resolved="$(canonicalize "$candidate" 2>/dev/null)"; then
+			echo "$resolved"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+validate_codex_bundle() {
+	local binary="$1"
+	local resources_dir
+	local host
+
+	resources_dir="$(dirname "$binary")"
+	if [[ "$(basename "$resources_dir")" != "Resources" || "$(basename "$(dirname "$resources_dir")")" != "Contents" ]]; then
+		return 0
+	fi
+	host="$resources_dir/codex-code-mode-host"
+	if [[ ! -x "$host" ]]; then
+		echo "Codex App installation is incomplete: missing executable $host" >&2
+		echo "Update or reinstall ChatGPT/Codex, then rerun this command." >&2
+		return 1
+	fi
+}
+
+mkdir -p "$run_dir"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+	echo "Development stack restart is already in progress." >&2
+	exit 1
+fi
+trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+if [[ ! -x "$relay_run" ]]; then
+	echo "Relay restart script is missing or not executable: $relay_run" >&2
+	exit 1
+fi
+if ! codex_binary="$(resolve_codex_binary)"; then
+	echo "Codex CLI was not found in CODEX_BINARY, PATH, ChatGPT.app, or Codex.app." >&2
+	exit 1
+fi
+validate_codex_bundle "$codex_binary"
+echo "Codex CLI: $codex_binary"
+
+if launchctl print "$service_target" >/dev/null 2>&1; then
+	echo "Stopping managed Mac Agent service: $service_label"
+	launchctl remove "$service_label" >/dev/null 2>&1 || true
+fi
+
+agent_pids=()
+add_agent_pid() {
+	local candidate="$1"
+	local existing
+	[[ "$candidate" =~ ^[0-9]+$ ]] || return
+	for existing in "${agent_pids[@]:-}"; do
+		[[ "$existing" == "$candidate" ]] && return
+	done
+	agent_pids+=("$candidate")
+}
+
+if [[ -f "$pid_file" ]]; then
+	managed_pid="$(tr -d '[:space:]' <"$pid_file")"
+	managed_command="$(ps -p "$managed_pid" -o command= 2>/dev/null || true)"
+	if [[ "$managed_command" == "$agent_binary"\ serve* && "$managed_command" == *"--relay-url $relay_url"* ]]; then
+		add_agent_pid "$managed_pid"
+	fi
+fi
+
+while read -r pid command; do
+	if [[ "$command" == "$agent_binary"\ serve* && "$command" == *"--relay-url $relay_url"* ]]; then
+		add_agent_pid "$pid"
+	fi
+done < <(ps -axo pid=,command=)
+
+if [[ "${#agent_pids[@]}" -gt 0 ]]; then
+	echo "Stopping Mac Agent process(es): ${agent_pids[*]}"
+	kill -TERM "${agent_pids[@]}" 2>/dev/null || true
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		remaining=0
+		for pid in "${agent_pids[@]}"; do
+			kill -0 "$pid" 2>/dev/null && remaining=1
+		done
+		[[ "$remaining" -eq 0 ]] && break
+		sleep 0.1
+	done
+	for pid in "${agent_pids[@]}"; do
+		kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+	done
+fi
+rm -f "$pid_file"
+
+"$relay_run" "$profile"
+make -C "$repo_dir" build
+
+rm -f "$log_file" "$pid_file"
+launchctl submit \
+	-l "$service_label" \
+	-o "$log_file" \
+	-e "$log_file" \
+	-- "$agent_binary" serve \
+		--relay-url "$relay_url" \
+		--codex-binary "$codex_binary" \
+		--name "$agent_name"
+
+for ((attempt = 0; attempt < 100; attempt++)); do
+	if curl -fsS "http://127.0.0.1:$relay_port/status" 2>/dev/null | grep -q '"agent_connected":true'; then
+		agent_pid="$(launchctl print "$service_target" | awk '/pid =/{print $3; exit}')"
+		echo "$agent_pid" >"$pid_file"
+		echo "Mac Agent running: profile=$profile pid=$agent_pid"
+		echo "Relay App WebSocket: ws://127.0.0.1:$relay_port/ws/app"
+		echo "Log: $log_file"
+		exit 0
+	fi
+	if ! launchctl print "$service_target" >/dev/null 2>&1; then
+		break
+	fi
+	sleep 0.1
+done
+
+echo "Mac Agent failed to connect. Log: $log_file" >&2
+tail -n 30 "$log_file" >&2 || true
+launchctl remove "$service_label" >/dev/null 2>&1 || true
+exit 1

@@ -10,34 +10,42 @@ import (
 )
 
 const (
-	DefaultTurnTimeout      = 30 * time.Minute
-	DefaultLogBufferLines   = 500
-	DefaultMaxDiffBytes     = 128 * 1024
-	DefaultProjectScanDepth = 4
+	DefaultWorkspaceRoot  = "/Users/leehooo/work"
+	DefaultTurnTimeout    = 30 * time.Minute
+	DefaultLogBufferLines = 500
+	DefaultMaxDiffBytes   = 128 * 1024
 )
 
 type Config struct {
-	RelayURL         string
-	WorkspaceRoots   []string
-	ProjectScanDepth int
-	CodexBinary      string
-	AgentName        string
-	TurnTimeout      time.Duration
-	LogBufferLines   int
-	MaxDiffBytes     int
+	RelayURL       string
+	WorkspaceRoots []string
+	CodexStateFile string
+	CodexBinary    string
+	AgentName      string
+	TurnTimeout    time.Duration
+	LogBufferLines int
+	MaxDiffBytes   int
 }
 
 func FromEnv() (Config, error) {
 	hostname, _ := os.Hostname()
+	codexStateFile, err := resolveCodexStateFile()
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceRoots := splitWorkspaceRoots(os.Getenv("AGENT_WORKSPACE_ROOTS"))
+	if len(workspaceRoots) == 0 {
+		workspaceRoots = []string{DefaultWorkspaceRoot}
+	}
 	config := Config{
-		RelayURL:         os.Getenv("AGENT_RELAY_URL"),
-		WorkspaceRoots:   splitWorkspaceRoots(os.Getenv("AGENT_WORKSPACE_ROOTS")),
-		ProjectScanDepth: DefaultProjectScanDepth,
-		CodexBinary:      envOrDefault("AGENT_CODEX_BINARY", "codex"),
-		AgentName:        envOrDefault("AGENT_NAME", hostname),
-		TurnTimeout:      DefaultTurnTimeout,
-		LogBufferLines:   DefaultLogBufferLines,
-		MaxDiffBytes:     DefaultMaxDiffBytes,
+		RelayURL:       os.Getenv("AGENT_RELAY_URL"),
+		WorkspaceRoots: workspaceRoots,
+		CodexStateFile: codexStateFile,
+		CodexBinary:    envOrDefault("AGENT_CODEX_BINARY", "codex"),
+		AgentName:      envOrDefault("AGENT_NAME", hostname),
+		TurnTimeout:    DefaultTurnTimeout,
+		LogBufferLines: DefaultLogBufferLines,
+		MaxDiffBytes:   DefaultMaxDiffBytes,
 	}
 	if value := os.Getenv("AGENT_TURN_TIMEOUT"); value != "" {
 		duration, err := time.ParseDuration(value)
@@ -53,19 +61,15 @@ func FromEnv() (Config, error) {
 		}
 		config.LogBufferLines = lines
 	}
-	if value := os.Getenv("AGENT_PROJECT_SCAN_DEPTH"); value != "" {
-		depth, err := strconv.Atoi(value)
-		if err != nil || depth < 1 {
-			return Config{}, fmt.Errorf("AGENT_PROJECT_SCAN_DEPTH must be a positive integer")
-		}
-		config.ProjectScanDepth = depth
-	}
 	return config, nil
 }
 
 func (c Config) ValidateServe() error {
 	if c.RelayURL == "" {
 		return fmt.Errorf("Relay URL is required")
+	}
+	if c.CodexStateFile == "" {
+		return fmt.Errorf("Codex Desktop state file is required")
 	}
 	return c.ValidateTurn()
 }
@@ -105,4 +109,19 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func resolveCodexStateFile() (string, error) {
+	if value := strings.TrimSpace(os.Getenv("AGENT_CODEX_STATE_FILE")); value != "" {
+		return value, nil
+	}
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home for Codex Desktop state: %w", err)
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	return filepath.Join(codexHome, ".codex-global-state.json"), nil
 }

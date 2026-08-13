@@ -2,6 +2,7 @@ package turn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,7 +15,11 @@ import (
 	"github.com/ai-coding-remote/mac-agent/internal/workspace"
 )
 
-const MaxPromptBytes = 16 * 1024
+const (
+	MaxPromptBytes        = 16 * 1024
+	maxLiveItemFieldBytes = 24 * 1024
+	maxLiveSnapshotBytes  = 180 * 1024
+)
 
 var (
 	ErrBusy         = errors.New("agent is already running a turn")
@@ -32,31 +37,37 @@ type GitCollector interface {
 type EventSink func(protocol.Message)
 
 type Snapshot struct {
-	TraceID      string
-	ProjectID    string
-	ThreadID     string
-	TurnID       string
-	Status       string
-	StartedAt    time.Time
-	RecentOutput []string
-	LastTerminal *protocol.Message
+	TraceID            string
+	ProjectID          string
+	ThreadID           string
+	TurnID             string
+	Status             string
+	StartedAt          time.Time
+	RecentOutput       []string
+	LiveItems          []protocol.ThreadHistoryItem
+	LastSequence       int64
+	LiveItemsTruncated bool
+	LastTerminal       *protocol.Message
 }
 
 type Controller struct {
-	mu           sync.RWMutex
-	runner       runner.Runner
-	catalog      ProjectCatalog
-	collector    GitCollector
-	timeout      time.Duration
-	sender       protocol.Sender
-	logs         *buffer.Ring
-	traceID      string
-	projectID    string
-	threadID     string
-	turnID       string
-	startedAt    time.Time
-	cancel       context.CancelFunc
-	lastTerminal *protocol.Message
+	mu            sync.RWMutex
+	runner        runner.Runner
+	catalog       ProjectCatalog
+	collector     GitCollector
+	timeout       time.Duration
+	sender        protocol.Sender
+	logs          *buffer.Ring
+	liveItems     []protocol.ThreadHistoryItem
+	liveItemIndex map[string]int
+	lastSequence  int64
+	traceID       string
+	projectID     string
+	threadID      string
+	turnID        string
+	startedAt     time.Time
+	cancel        context.CancelFunc
+	lastTerminal  *protocol.Message
 }
 
 func NewController(turnRunner runner.Runner, catalog ProjectCatalog, collector GitCollector, timeout time.Duration, logLines int, sender protocol.Sender) *Controller {
@@ -104,6 +115,9 @@ func (c *Controller) Start(parent context.Context, traceID string, payload proto
 	c.startedAt = startedAt
 	c.cancel = cancel
 	c.lastTerminal = nil
+	c.liveItems = nil
+	c.liveItemIndex = make(map[string]int)
+	c.lastSequence = 0
 	c.mu.Unlock()
 
 	c.emit(sink, protocol.TypeAgentStatus, traceID, protocol.AgentStatusPayload{
@@ -138,9 +152,11 @@ func (c *Controller) Snapshot() Snapshot {
 	if c.traceID != "" {
 		status = protocol.StatusRunning
 	}
+	liveItems, liveItemsTruncated := fitLiveSnapshot(c.liveItems)
 	snapshot := Snapshot{
 		TraceID: c.traceID, ProjectID: c.projectID, ThreadID: c.threadID, TurnID: c.turnID,
-		Status: status, StartedAt: c.startedAt, RecentOutput: c.logs.Values(),
+		Status: status, StartedAt: c.startedAt, RecentOutput: c.logs.Values(), LiveItems: liveItems,
+		LastSequence: c.lastSequence, LiveItemsTruncated: liveItemsTruncated,
 	}
 	if c.lastTerminal != nil {
 		terminal := *c.lastTerminal
@@ -150,8 +166,10 @@ func (c *Controller) Snapshot() Snapshot {
 }
 
 func (c *Controller) execute(ctx context.Context, traceID string, project workspace.Project, payload protocol.TurnStartPayload, startedAt time.Time, sink EventSink) {
+	workingDir := project.WorkingDirectory(payload.ThreadID)
 	turnResult, turnErr := c.runner.Run(ctx, runner.Request{
-		ProjectID: project.ID, ThreadID: payload.ThreadID, Prompt: payload.Prompt, WorkingDir: project.Path,
+		ProjectID: project.ID, ThreadID: payload.ThreadID, Prompt: payload.Prompt, WorkingDir: workingDir,
+		PermissionProfileID: payload.PermissionProfileID,
 	}, func(event runner.Event) {
 		switch event.Kind {
 		case runner.EventStarted:
@@ -168,6 +186,31 @@ func (c *Controller) execute(ctx context.Context, traceID string, project worksp
 			c.logs.Add(event.Text)
 			c.emit(sink, protocol.TypeTurnOutput, traceID, protocol.TurnOutputPayload{
 				ProjectID: project.ID, ThreadID: event.ThreadID, TurnID: event.TurnID, Stream: event.Stream, Text: event.Text,
+			})
+		case runner.EventItemStarted:
+			sequence := c.storeStartedItem(traceID, event.Item)
+			if sequence == 0 {
+				return
+			}
+			c.emit(sink, protocol.TypeTurnItemStarted, traceID, protocol.TurnItemStartedPayload{
+				ProjectID: project.ID, ThreadID: event.ThreadID, TurnID: event.TurnID, Sequence: sequence, Item: event.Item,
+			})
+		case runner.EventItemDelta:
+			sequence := c.storeItemDelta(traceID, event)
+			if sequence == 0 {
+				return
+			}
+			c.emit(sink, protocol.TypeTurnItemDelta, traceID, protocol.TurnItemDeltaPayload{
+				ProjectID: project.ID, ThreadID: event.ThreadID, TurnID: event.TurnID, Sequence: sequence,
+				ItemID: event.ItemID, Field: event.Field, Delta: event.Text,
+			})
+		case runner.EventItemCompleted:
+			sequence := c.storeCompletedItem(traceID, event.Item)
+			if sequence == 0 {
+				return
+			}
+			c.emit(sink, protocol.TypeTurnItemDone, traceID, protocol.TurnItemCompletedPayload{
+				ProjectID: project.ID, ThreadID: event.ThreadID, TurnID: event.TurnID, Sequence: sequence, Item: event.Item,
 			})
 		}
 	})
@@ -194,7 +237,7 @@ func (c *Controller) execute(ctx context.Context, traceID string, project worksp
 		})
 	default:
 		gitContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		gitResult, collectErr := c.collector.Collect(gitContext, project.Path)
+		gitResult, collectErr := c.collector.Collect(gitContext, workingDir)
 		cancel()
 		if collectErr != nil {
 			terminal = c.emit(sink, protocol.TypeTurnFailed, traceID, protocol.TurnFailedPayload{
@@ -217,9 +260,110 @@ func (c *Controller) execute(ctx context.Context, traceID string, project worksp
 		c.startedAt = time.Time{}
 		c.cancel = nil
 		c.lastTerminal = &terminal
+		c.liveItems = nil
+		c.liveItemIndex = nil
 	}
 	c.mu.Unlock()
 	c.emit(sink, protocol.TypeAgentStatus, traceID, protocol.AgentStatusPayload{Status: protocol.StatusIdle})
+}
+
+func (c *Controller) storeStartedItem(traceID string, item protocol.ThreadHistoryItem) int64 {
+	if item.ID == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.traceID != traceID {
+		return 0
+	}
+	c.lastSequence++
+	if index, ok := c.liveItemIndex[item.ID]; ok {
+		c.liveItems[index] = item
+	} else {
+		c.liveItemIndex[item.ID] = len(c.liveItems)
+		c.liveItems = append(c.liveItems, item)
+	}
+	return c.lastSequence
+}
+
+func (c *Controller) storeItemDelta(traceID string, event runner.Event) int64 {
+	if event.ItemID == "" || event.Text == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.traceID != traceID {
+		return 0
+	}
+	index, ok := c.liveItemIndex[event.ItemID]
+	if !ok {
+		itemType := "activity"
+		if event.Stream == "assistant" {
+			itemType = "agentMessage"
+		} else if event.Field == "output" {
+			itemType = "commandExecution"
+		}
+		c.liveItemIndex[event.ItemID] = len(c.liveItems)
+		c.liveItems = append(c.liveItems, protocol.ThreadHistoryItem{ID: event.ItemID, Type: itemType})
+		index = len(c.liveItems) - 1
+	}
+	item := &c.liveItems[index]
+	if event.Field == "output" {
+		item.Output, item.Truncated = appendLiveDelta(item.Output, event.Text, item.Truncated)
+	} else {
+		item.Text, item.Truncated = appendLiveDelta(item.Text, event.Text, item.Truncated)
+	}
+	c.lastSequence++
+	return c.lastSequence
+}
+
+func (c *Controller) storeCompletedItem(traceID string, item protocol.ThreadHistoryItem) int64 {
+	if item.ID == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.traceID != traceID {
+		return 0
+	}
+	c.lastSequence++
+	if index, ok := c.liveItemIndex[item.ID]; ok {
+		c.liveItems[index] = item
+	} else {
+		c.liveItemIndex[item.ID] = len(c.liveItems)
+		c.liveItems = append(c.liveItems, item)
+	}
+	return c.lastSequence
+}
+
+func appendLiveDelta(current, delta string, alreadyTruncated bool) (string, bool) {
+	if alreadyTruncated {
+		return current, true
+	}
+	value := current + delta
+	if len(value) <= maxLiveItemFieldBytes {
+		return value, false
+	}
+	const suffix = "..."
+	end := maxLiveItemFieldBytes - len(suffix)
+	for end > 0 && end < len(value) && (value[end]&0xc0) == 0x80 {
+		end--
+	}
+	return value[:end] + suffix, true
+}
+
+func fitLiveSnapshot(items []protocol.ThreadHistoryItem) ([]protocol.ThreadHistoryItem, bool) {
+	result := append([]protocol.ThreadHistoryItem(nil), items...)
+	truncated := false
+	for len(result) > 0 {
+		data, err := json.Marshal(result)
+		if err == nil && len(data) <= maxLiveSnapshotBytes {
+			break
+		}
+		result = result[1:]
+		truncated = true
+	}
+	return result, truncated
 }
 
 func (c *Controller) emit(sink EventSink, messageType, traceID string, payload any) protocol.Message {

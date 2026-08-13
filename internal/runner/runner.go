@@ -3,13 +3,16 @@ package runner
 import (
 	"context"
 	"time"
+
+	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 )
 
 type Request struct {
-	ProjectID  string
-	ThreadID   string
-	Prompt     string
-	WorkingDir string
+	ProjectID           string
+	ThreadID            string
+	Prompt              string
+	WorkingDir          string
+	PermissionProfileID string
 }
 
 type Event struct {
@@ -18,6 +21,9 @@ type Event struct {
 	TurnID   string
 	Stream   string
 	Text     string
+	ItemID   string
+	Field    string
+	Item     protocol.ThreadHistoryItem
 }
 
 type Result struct {

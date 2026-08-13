@@ -42,8 +42,50 @@ func (f *fakeRunner) Run(ctx context.Context, _ runner.Request, emit func(runner
 			return runner.Result{ThreadID: "thread-1", TurnID: "turn-1"}, ctx.Err()
 		}
 	}
+	item := protocol.ThreadHistoryItem{ID: "item-agent", Type: "agentMessage", Role: "assistant"}
+	emit(runner.Event{Kind: runner.EventItemStarted, ThreadID: "thread-1", TurnID: "turn-1", Item: item})
+	emit(runner.Event{Kind: runner.EventItemDelta, ThreadID: "thread-1", TurnID: "turn-1", Stream: "assistant", ItemID: item.ID, Field: "text", Text: "done"})
+	item.Text = "done"
+	item.Phase = "final_answer"
+	emit(runner.Event{Kind: runner.EventItemCompleted, ThreadID: "thread-1", TurnID: "turn-1", Item: item})
 	emit(runner.Event{Kind: runner.EventOutput, ThreadID: "thread-1", TurnID: "turn-1", Stream: "assistant", Text: "done"})
 	return runner.Result{ThreadID: "thread-1", TurnID: "turn-1", Duration: time.Millisecond, Summary: "done"}, nil
+}
+
+func TestControllerEmitsOrderedItemEvents(t *testing.T) {
+	controller := NewController(&fakeRunner{}, fakeCatalog{workspace.Project{ID: "project-1", Path: t.TempDir()}}, fakeCollector{}, time.Minute, 10, protocol.Sender{Kind: "device", ID: "mac"})
+	messages := make(chan protocol.Message, 8)
+	if err := controller.Start(context.Background(), "trace-items", protocol.TurnStartPayload{ProjectID: "project-1", Prompt: "stream"}, func(message protocol.Message) {
+		messages <- message
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sequences := []int64{}
+	deadline := time.After(time.Second)
+	for len(sequences) < 3 {
+		select {
+		case message := <-messages:
+			switch message.Type {
+			case protocol.TypeTurnItemStarted:
+				payload, _ := protocol.PayloadAs[protocol.TurnItemStartedPayload](message)
+				sequences = append(sequences, payload.Sequence)
+			case protocol.TypeTurnItemDelta:
+				payload, _ := protocol.PayloadAs[protocol.TurnItemDeltaPayload](message)
+				if payload.ItemID != "item-agent" || payload.Delta != "done" {
+					t.Fatalf("unexpected delta: %#v", payload)
+				}
+				sequences = append(sequences, payload.Sequence)
+			case protocol.TypeTurnItemDone:
+				payload, _ := protocol.PayloadAs[protocol.TurnItemCompletedPayload](message)
+				sequences = append(sequences, payload.Sequence)
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for item events")
+		}
+	}
+	if sequences[0] != 1 || sequences[1] != 2 || sequences[2] != 3 {
+		t.Fatalf("unexpected sequences: %#v", sequences)
+	}
 }
 
 func TestControllerCompletesAndReturnsToIdle(t *testing.T) {

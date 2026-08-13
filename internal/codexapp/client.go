@@ -12,7 +12,12 @@ import (
 	"time"
 )
 
-const maxRPCMessageBytes = 4 * 1024 * 1024
+const maxRPCMessageBytes = 64 * 1024 * 1024
+
+const (
+	RemoteSandboxMode    = "workspace-write"
+	RemoteApprovalPolicy = "never"
+)
 
 type RPCError struct {
 	Code    int             `json:"code"`
@@ -38,6 +43,7 @@ type Thread struct {
 	Source    json.RawMessage `json:"source"`
 	CreatedAt int64           `json:"createdAt"`
 	UpdatedAt int64           `json:"updatedAt"`
+	Turns     []Turn          `json:"turns"`
 }
 
 func (t Thread) Title() string {
@@ -80,12 +86,21 @@ func (t Thread) SourceName() string {
 }
 
 type Turn struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	DurationMS *int64 `json:"durationMs"`
-	Error      *struct {
+	ID          string            `json:"id"`
+	Status      string            `json:"status"`
+	StartedAt   *int64            `json:"startedAt"`
+	CompletedAt *int64            `json:"completedAt"`
+	DurationMS  *int64            `json:"durationMs"`
+	Items       []json.RawMessage `json:"items"`
+	Error       *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+type PermissionProfile struct {
+	ID          string  `json:"id"`
+	Description *string `json:"description"`
+	Allowed     bool    `json:"allowed"`
 }
 
 type rpcMessage struct {
@@ -127,7 +142,7 @@ func NewClient(reader io.Reader, writer io.Writer, closer io.Closer) *Client {
 func (c *Client) Initialize(ctx context.Context, name, version string) error {
 	params := map[string]any{
 		"clientInfo":   map[string]any{"name": name, "title": "AI Coding Remote Mac Agent", "version": version},
-		"capabilities": map[string]any{"experimentalApi": false},
+		"capabilities": map[string]any{"experimentalApi": true},
 	}
 	var response json.RawMessage
 	if err := c.Call(ctx, "initialize", params, &response); err != nil {
@@ -137,6 +152,25 @@ func (c *Client) Initialize(ctx context.Context, name, version string) error {
 		return fmt.Errorf("notify Codex app-server initialized: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) ListLatestTurns(ctx context.Context, threadID string, limit int) ([]Turn, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	var response struct {
+		Data []Turn `json:"data"`
+	}
+	params := map[string]any{
+		"threadId":      threadID,
+		"limit":         limit,
+		"sortDirection": "desc",
+		"itemsView":     "summary",
+	}
+	if err := c.Call(ctx, "thread/turns/list", params, &response); err != nil {
+		return nil, fmt.Errorf("list latest Codex thread turns: %w", err)
+	}
+	return response.Data, nil
 }
 
 func (c *Client) SetNotificationHandler(handler func(Notification)) {
@@ -177,52 +211,94 @@ func (c *Client) ListThreads(ctx context.Context, cwd string) ([]Thread, error) 
 	return threads, nil
 }
 
-func (c *Client) StartThread(ctx context.Context, cwd string) (Thread, error) {
+func (c *Client) ReadThread(ctx context.Context, threadID string) (Thread, error) {
 	var response struct {
 		Thread Thread `json:"thread"`
 	}
-	params := map[string]any{
-		"cwd":            cwd,
-		"sandbox":        "workspace-write",
-		"approvalPolicy": "never",
-		"ephemeral":      false,
+	params := map[string]any{"threadId": threadID, "includeTurns": true}
+	if err := c.Call(ctx, "thread/read", params, &response); err != nil {
+		return Thread{}, fmt.Errorf("read Codex thread: %w", err)
 	}
+	return response.Thread, nil
+}
+
+func (c *Client) ListPermissionProfiles(ctx context.Context, cwd string) ([]PermissionProfile, error) {
+	var profiles []PermissionProfile
+	var cursor *string
+	for page := 0; page < 100; page++ {
+		params := map[string]any{"cwd": cwd, "limit": 100}
+		if cursor != nil {
+			params["cursor"] = *cursor
+		}
+		var response struct {
+			Data       []PermissionProfile `json:"data"`
+			NextCursor *string             `json:"nextCursor"`
+		}
+		if err := c.Call(ctx, "permissionProfile/list", params, &response); err != nil {
+			return nil, fmt.Errorf("list Codex permission profiles: %w", err)
+		}
+		profiles = append(profiles, response.Data...)
+		if response.NextCursor == nil || *response.NextCursor == "" {
+			break
+		}
+		cursor = response.NextCursor
+	}
+	return profiles, nil
+}
+
+func (c *Client) StartThread(ctx context.Context, cwd, permissionProfileID string) (Thread, error) {
+	var response struct {
+		Thread Thread `json:"thread"`
+	}
+	params := threadExecutionParams(cwd, permissionProfileID)
+	params["ephemeral"] = false
 	if err := c.Call(ctx, "thread/start", params, &response); err != nil {
 		return Thread{}, fmt.Errorf("start Codex thread: %w", err)
 	}
 	return response.Thread, nil
 }
 
-func (c *Client) ResumeThread(ctx context.Context, threadID, cwd string) (Thread, error) {
+func (c *Client) ResumeThread(ctx context.Context, threadID, cwd, permissionProfileID string) (Thread, error) {
 	var response struct {
 		Thread Thread `json:"thread"`
 	}
-	params := map[string]any{
-		"threadId":       threadID,
-		"cwd":            cwd,
-		"sandbox":        "workspace-write",
-		"approvalPolicy": "never",
-	}
+	params := threadExecutionParams(cwd, permissionProfileID)
+	params["threadId"] = threadID
 	if err := c.Call(ctx, "thread/resume", params, &response); err != nil {
 		return Thread{}, fmt.Errorf("resume Codex thread: %w", err)
 	}
 	return response.Thread, nil
 }
 
-func (c *Client) StartTurn(ctx context.Context, threadID, cwd, prompt string) (Turn, error) {
+func (c *Client) StartTurn(ctx context.Context, threadID, cwd, prompt, permissionProfileID string) (Turn, error) {
 	var response struct {
 		Turn Turn `json:"turn"`
 	}
 	params := map[string]any{
-		"threadId":       threadID,
-		"cwd":            cwd,
-		"approvalPolicy": "never",
-		"input":          []map[string]any{{"type": "text", "text": prompt}},
+		"threadId": threadID,
+		"cwd":      cwd,
+		"input":    []map[string]any{{"type": "text", "text": prompt}},
+	}
+	if permissionProfileID == "" {
+		params["approvalPolicy"] = RemoteApprovalPolicy
+	} else {
+		params["permissions"] = permissionProfileID
 	}
 	if err := c.Call(ctx, "turn/start", params, &response); err != nil {
 		return Turn{}, fmt.Errorf("start Codex turn: %w", err)
 	}
 	return response.Turn, nil
+}
+
+func threadExecutionParams(cwd, permissionProfileID string) map[string]any {
+	params := map[string]any{"cwd": cwd}
+	if permissionProfileID == "" {
+		params["sandbox"] = RemoteSandboxMode
+		params["approvalPolicy"] = RemoteApprovalPolicy
+	} else {
+		params["permissions"] = permissionProfileID
+	}
+	return params
 }
 
 func (c *Client) InterruptTurn(ctx context.Context, threadID, turnID string) error {

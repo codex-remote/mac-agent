@@ -18,22 +18,25 @@ type TurnController interface {
 type Inventory interface {
 	Projects(context.Context) ([]protocol.Project, error)
 	Threads(context.Context, string) ([]protocol.Thread, error)
+	ReadThread(context.Context, string, string) (protocol.ThreadDetailPayload, error)
+	ExecutionProfiles(context.Context, string) (protocol.ExecutionProfileSnapshotPayload, error)
 }
 
 type Publisher func(protocol.Message) error
 
 type Service struct {
-	context    context.Context
-	name       string
-	version    string
-	sender     protocol.Sender
-	controller TurnController
-	inventory  Inventory
-	publish    Publisher
+	context      context.Context
+	name         string
+	version      string
+	sender       protocol.Sender
+	capabilities protocol.AgentCapabilitiesPayload
+	controller   TurnController
+	inventory    Inventory
+	publish      Publisher
 }
 
-func NewService(ctx context.Context, name, version string, sender protocol.Sender, controller TurnController, inventory Inventory, publish Publisher) *Service {
-	return &Service{context: ctx, name: name, version: version, sender: sender, controller: controller, inventory: inventory, publish: publish}
+func NewService(ctx context.Context, name, version string, sender protocol.Sender, capabilities protocol.AgentCapabilitiesPayload, controller TurnController, inventory Inventory, publish Publisher) *Service {
+	return &Service{context: ctx, name: name, version: version, sender: sender, capabilities: capabilities, controller: controller, inventory: inventory, publish: publish}
 }
 
 func (s *Service) InitialMessages() []protocol.Message {
@@ -42,11 +45,13 @@ func (s *Service) InitialMessages() []protocol.Message {
 	status := s.message(protocol.TypeAgentStatus, snapshot.TraceID, protocol.AgentStatusPayload{
 		Status: snapshot.Status, ProjectID: snapshot.ProjectID, ThreadID: snapshot.ThreadID, TurnID: snapshot.TurnID,
 	})
-	messages := []protocol.Message{hello, status}
+	capabilities := s.message(protocol.TypeAgentCapabilities, "agent", s.capabilities)
+	messages := []protocol.Message{hello, status, capabilities}
 	if snapshot.Status == protocol.StatusRunning {
 		messages = append(messages, s.message(protocol.TypeTurnSnapshot, snapshot.TraceID, protocol.TurnSnapshotPayload{
 			ProjectID: snapshot.ProjectID, ThreadID: snapshot.ThreadID, TurnID: snapshot.TurnID,
 			Status: snapshot.Status, StartedAt: snapshot.StartedAt, RecentOutput: snapshot.RecentOutput,
+			LiveItems: snapshot.LiveItems, LastSequence: snapshot.LastSequence, LiveItemsTruncated: snapshot.LiveItemsTruncated,
 		}))
 	} else if snapshot.LastTerminal != nil {
 		messages = append(messages, *snapshot.LastTerminal)
@@ -56,6 +61,21 @@ func (s *Service) InitialMessages() []protocol.Message {
 
 func (s *Service) Handle(_ context.Context, message protocol.Message) {
 	switch message.Type {
+	case protocol.TypeExecutionProfileList:
+		payload, err := protocol.PayloadAs[protocol.ExecutionProfileListPayload](message)
+		if err != nil || payload.ProjectID == "" {
+			if err == nil {
+				err = errors.New("project_id is required")
+			}
+			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
+			return
+		}
+		snapshot, err := s.inventory.ExecutionProfiles(s.context, payload.ProjectID)
+		if err != nil {
+			s.reject(message.TraceID, "EXECUTION_PROFILE_LIST_FAILED", err.Error())
+			return
+		}
+		_ = s.publish(s.message(protocol.TypeExecutionProfileSnapshot, message.TraceID, snapshot))
 	case protocol.TypeProjectList:
 		projects, err := s.inventory.Projects(s.context)
 		if err != nil {
@@ -75,6 +95,21 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 			return
 		}
 		_ = s.publish(s.message(protocol.TypeThreadSnapshot, message.TraceID, protocol.ThreadSnapshotPayload{ProjectID: payload.ProjectID, Threads: threads}))
+	case protocol.TypeThreadRead:
+		payload, err := protocol.PayloadAs[protocol.ThreadReadPayload](message)
+		if err != nil || payload.ProjectID == "" || payload.ThreadID == "" {
+			if err == nil {
+				err = errors.New("project_id and thread_id are required")
+			}
+			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
+			return
+		}
+		detail, err := s.inventory.ReadThread(s.context, payload.ProjectID, payload.ThreadID)
+		if err != nil {
+			s.reject(message.TraceID, "THREAD_READ_FAILED", err.Error())
+			return
+		}
+		_ = s.publish(s.message(protocol.TypeThreadDetail, message.TraceID, detail))
 	case protocol.TypeTurnStart:
 		payload, err := protocol.PayloadAs[protocol.TurnStartPayload](message)
 		if err != nil {
@@ -99,13 +134,28 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 		if err := s.controller.Interrupt(payload.ThreadID, payload.TurnID); err != nil {
 			s.reject(message.TraceID, "TURN_NOT_FOUND", err.Error())
 		}
+	case protocol.TypeTurnAcknowledged:
+		payload, err := protocol.PayloadAs[protocol.TurnAcknowledgedPayload](message)
+		if err != nil || payload.TurnID == "" || !isTerminalStatus(payload.Status) {
+			if err == nil {
+				err = errors.New("turn_id and a terminal status are required")
+			}
+			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
+		}
 	default:
 		s.reject(message.TraceID, "MESSAGE_INVALID", fmt.Sprintf("unsupported message type %q", message.Type))
 	}
 }
 
+func isTerminalStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "interrupted"
+}
+
 func (s *Service) reject(traceID, code, text string) {
-	_ = s.publish(s.message(protocol.TypeTurnRejected, traceID, protocol.TurnRejectedPayload{Code: code, Message: text}))
+	capabilities := s.capabilities
+	_ = s.publish(s.message(protocol.TypeTurnRejected, traceID, protocol.TurnRejectedPayload{
+		Code: code, Message: text, ExecutionContext: &capabilities,
+	}))
 }
 
 func (s *Service) message(messageType, traceID string, payload any) protocol.Message {

@@ -9,11 +9,17 @@ import (
 	"time"
 
 	"github.com/ai-coding-remote/mac-agent/internal/codexapp"
+	"github.com/ai-coding-remote/mac-agent/internal/codexitem"
+	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 )
 
 const (
-	EventStarted = "started"
-	EventOutput  = "output"
+	EventStarted       = "started"
+	EventOutput        = "output"
+	EventItemStarted   = "item_started"
+	EventItemDelta     = "item_delta"
+	EventItemCompleted = "item_completed"
+	maxLiveFieldBytes  = 24 * 1024
 )
 
 var ErrTurnInterrupted = errors.New("Codex turn interrupted")
@@ -21,9 +27,10 @@ var ErrTurnInterrupted = errors.New("Codex turn interrupted")
 type AppServerClient interface {
 	SetNotificationHandler(func(codexapp.Notification))
 	ListThreads(context.Context, string) ([]codexapp.Thread, error)
-	StartThread(context.Context, string) (codexapp.Thread, error)
-	ResumeThread(context.Context, string, string) (codexapp.Thread, error)
-	StartTurn(context.Context, string, string, string) (codexapp.Turn, error)
+	ListPermissionProfiles(context.Context, string) ([]codexapp.PermissionProfile, error)
+	StartThread(context.Context, string, string) (codexapp.Thread, error)
+	ResumeThread(context.Context, string, string, string) (codexapp.Thread, error)
+	StartTurn(context.Context, string, string, string, string) (codexapp.Turn, error)
 	InterruptTurn(context.Context, string, string) error
 }
 
@@ -37,11 +44,17 @@ type appServerEvent struct {
 	turn     codexapp.Turn
 	stream   string
 	text     string
+	itemID   string
+	field    string
+	item     protocol.ThreadHistoryItem
 }
 
 func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (Result, error) {
 	if a.Client == nil {
 		return Result{}, fmt.Errorf("Codex app-server client is required")
+	}
+	if err := a.validatePermissionProfile(ctx, request.WorkingDir, request.PermissionProfileID); err != nil {
+		return Result{}, err
 	}
 	events := make(chan appServerEvent, 512)
 	terminal := make(chan appServerEvent, 1)
@@ -50,13 +63,13 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 			if event.kind == "completed" {
 				select {
 				case terminal <- event:
-				default:
+				case <-ctx.Done():
 				}
 				return
 			}
 			select {
 			case events <- event:
-			default:
+			case <-ctx.Done():
 			}
 		}
 	})
@@ -66,7 +79,7 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 	if err != nil {
 		return Result{}, err
 	}
-	turn, err := a.Client.StartTurn(ctx, thread.ID, request.WorkingDir, request.Prompt)
+	turn, err := a.Client.StartTurn(ctx, thread.ID, request.WorkingDir, request.Prompt, request.PermissionProfileID)
 	if err != nil {
 		return Result{ThreadID: thread.ID}, err
 	}
@@ -113,6 +126,24 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 				if emit != nil {
 					emit(Event{Kind: EventOutput, ThreadID: thread.ID, TurnID: turn.ID, Stream: event.stream, Text: event.text})
 				}
+			case EventItemStarted:
+				if emit != nil {
+					emit(Event{Kind: EventItemStarted, ThreadID: thread.ID, TurnID: turn.ID, Item: event.item})
+				}
+			case EventItemDelta:
+				if event.stream == "assistant" {
+					summary.WriteString(event.text)
+				}
+				if emit != nil {
+					emit(Event{Kind: EventItemDelta, ThreadID: thread.ID, TurnID: turn.ID, Stream: event.stream, ItemID: event.itemID, Field: event.field, Text: event.text})
+					if event.stream != "" {
+						emit(Event{Kind: EventOutput, ThreadID: thread.ID, TurnID: turn.ID, Stream: event.stream, Text: event.text})
+					}
+				}
+			case EventItemCompleted:
+				if emit != nil {
+					emit(Event{Kind: EventItemCompleted, ThreadID: thread.ID, TurnID: turn.ID, Item: event.item})
+				}
 			}
 		case <-ctx.Done():
 			interruptContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -123,9 +154,28 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 	}
 }
 
+func (a AppServer) validatePermissionProfile(ctx context.Context, cwd, profileID string) error {
+	if profileID == "" {
+		return nil
+	}
+	profiles, err := a.Client.ListPermissionProfiles(ctx, cwd)
+	if err != nil {
+		return err
+	}
+	for _, profile := range profiles {
+		if profile.ID == profileID {
+			if !profile.Allowed {
+				return fmt.Errorf("permission profile %q is not allowed for this project", profileID)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("permission profile %q is not available for this project", profileID)
+}
+
 func (a AppServer) resolveThread(ctx context.Context, request Request) (codexapp.Thread, error) {
 	if request.ThreadID == "" {
-		return a.Client.StartThread(ctx, request.WorkingDir)
+		return a.Client.StartThread(ctx, request.WorkingDir, request.PermissionProfileID)
 	}
 	threads, err := a.Client.ListThreads(ctx, request.WorkingDir)
 	if err != nil {
@@ -141,25 +191,57 @@ func (a AppServer) resolveThread(ctx context.Context, request Request) (codexapp
 	if !found {
 		return codexapp.Thread{}, fmt.Errorf("thread %s does not belong to project %s", request.ThreadID, request.ProjectID)
 	}
-	return a.Client.ResumeThread(ctx, request.ThreadID, request.WorkingDir)
+	return a.Client.ResumeThread(ctx, request.ThreadID, request.WorkingDir, request.PermissionProfileID)
 }
 
 func translateNotification(notification codexapp.Notification) (appServerEvent, bool) {
 	switch notification.Method {
-	case "item/agentMessage/delta", "item/commandExecution/outputDelta":
+	case "item/started", "item/completed":
 		var payload struct {
-			ThreadID string `json:"threadId"`
-			TurnID   string `json:"turnId"`
-			Delta    string `json:"delta"`
+			ThreadID string          `json:"threadId"`
+			TurnID   string          `json:"turnId"`
+			Item     json.RawMessage `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &payload) != nil {
 			return appServerEvent{}, false
 		}
-		stream := "stdout"
-		if notification.Method == "item/agentMessage/delta" {
-			stream = "assistant"
+		item, ok := codexitem.Normalize(payload.Item, maxLiveFieldBytes)
+		if !ok {
+			return appServerEvent{}, false
 		}
-		return appServerEvent{kind: EventOutput, threadID: payload.ThreadID, turn: codexapp.Turn{ID: payload.TurnID}, stream: stream, text: payload.Delta}, true
+		kind := EventItemStarted
+		if notification.Method == "item/completed" {
+			kind = EventItemCompleted
+		}
+		return appServerEvent{kind: kind, threadID: payload.ThreadID, turn: codexapp.Turn{ID: payload.TurnID}, item: item}, true
+	case "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/plan/delta",
+		"item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/mcpToolCall/progress":
+		var payload struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
+			Message  string `json:"message"`
+		}
+		if json.Unmarshal(notification.Params, &payload) != nil {
+			return appServerEvent{}, false
+		}
+		field := "text"
+		stream := ""
+		text := payload.Delta
+		switch notification.Method {
+		case "item/agentMessage/delta":
+			stream = "assistant"
+		case "item/commandExecution/outputDelta":
+			field = "output"
+			stream = "stdout"
+		case "item/mcpToolCall/progress":
+			text = payload.Message
+		}
+		if payload.ItemID == "" || text == "" {
+			return appServerEvent{}, false
+		}
+		return appServerEvent{kind: EventItemDelta, threadID: payload.ThreadID, turn: codexapp.Turn{ID: payload.TurnID}, stream: stream, text: text, itemID: payload.ItemID, field: field}, true
 	case "turn/completed":
 		var payload struct {
 			ThreadID string        `json:"threadId"`

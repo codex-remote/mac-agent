@@ -8,8 +8,10 @@
 /build/
 /dist/
 /tmp/
+/.run/
 /coverage/
 coverage.out
 *.test
 *.prof
 mac-agent
+agent
