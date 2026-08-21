@@ -2,8 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
@@ -24,19 +29,63 @@ type Inventory interface {
 
 type Publisher func(protocol.Message) error
 
+type DurableStore interface {
+	PrepareRun(context.Context, string, string, any) (bool, error)
+	AppendEvent(context.Context, string, protocol.Message) (protocol.Message, error)
+	Pending(context.Context) ([]protocol.Message, error)
+	DurableAck(context.Context, string, int64) error
+	Cancel(context.Context, string) error
+	PrepareBootstrap(context.Context, string, string) (string, int64, error)
+	AckBootstrap(context.Context, string, int64, string, bool) error
+}
+
 type Service struct {
-	context      context.Context
-	name         string
-	version      string
-	sender       protocol.Sender
-	capabilities protocol.AgentCapabilitiesPayload
-	controller   TurnController
-	inventory    Inventory
-	publish      Publisher
+	context              context.Context
+	name                 string
+	version              string
+	sender               protocol.Sender
+	capabilities         protocol.AgentCapabilitiesPayload
+	controller           TurnController
+	inventory            Inventory
+	publish              Publisher
+	durable              DurableStore
+	bootstrapMu          sync.Mutex
+	bootstrapAcks        map[string]chan protocol.BootstrapAckPayload
+	bootstrapReadTimeout time.Duration
+}
+
+func (s *Service) SetDurableStore(store DurableStore) { s.durable = store }
+
+func (s *Service) StartDurableReplay(interval time.Duration) {
+	if s.durable == nil || interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pending, err := s.durable.Pending(s.context)
+				if err != nil {
+					continue
+				}
+				for _, message := range pending {
+					_ = s.publish(message)
+				}
+			case <-s.context.Done():
+				return
+			}
+		}
+	}()
 }
 
 func NewService(ctx context.Context, name, version string, sender protocol.Sender, capabilities protocol.AgentCapabilitiesPayload, controller TurnController, inventory Inventory, publish Publisher) *Service {
-	return &Service{context: ctx, name: name, version: version, sender: sender, capabilities: capabilities, controller: controller, inventory: inventory, publish: publish}
+	return &Service{
+		context: ctx, name: name, version: version, sender: sender, capabilities: capabilities,
+		controller: controller, inventory: inventory, publish: publish,
+		bootstrapAcks: make(map[string]chan protocol.BootstrapAckPayload), bootstrapReadTimeout: 20 * time.Second,
+	}
 }
 
 func (s *Service) InitialMessages() []protocol.Message {
@@ -47,6 +96,11 @@ func (s *Service) InitialMessages() []protocol.Message {
 	})
 	capabilities := s.message(protocol.TypeAgentCapabilities, "agent", s.capabilities)
 	messages := []protocol.Message{hello, status, capabilities}
+	if s.durable != nil {
+		if pending, err := s.durable.Pending(s.context); err == nil {
+			messages = append(messages, pending...)
+		}
+	}
 	if snapshot.Status == protocol.StatusRunning {
 		messages = append(messages, s.message(protocol.TypeTurnSnapshot, snapshot.TraceID, protocol.TurnSnapshotPayload{
 			ProjectID: snapshot.ProjectID, ThreadID: snapshot.ThreadID, TurnID: snapshot.TurnID,
@@ -116,20 +170,58 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
 			return
 		}
-		err = s.controller.Start(s.context, message.TraceID, payload, func(event protocol.Message) {
+		runID := payload.RunID
+		if runID == "" {
+			runID = message.TraceID
+		}
+		if payload.CommandID == "" {
+			payload.CommandID = message.MessageID
+		}
+		if s.durable != nil {
+			created, prepareErr := s.durable.PrepareRun(s.context, runID, payload.CommandID, payload)
+			if prepareErr != nil {
+				s.reject(message.TraceID, "DURABLE_STORE_FAILED", prepareErr.Error())
+				return
+			}
+			if !created {
+				if pending, pendingErr := s.durable.Pending(s.context); pendingErr == nil {
+					for _, event := range pending {
+						_ = s.publish(event)
+					}
+				}
+				return
+			}
+			accepted := s.message(protocol.TypeRunAccepted, runID, protocol.RunAcceptedPayload{CommandID: payload.CommandID, RunID: runID})
+			if accepted, err = s.durable.AppendEvent(s.context, runID, accepted); err != nil {
+				s.reject(message.TraceID, "DURABLE_STORE_FAILED", err.Error())
+				return
+			}
+			_ = s.publish(accepted)
+		}
+		err = s.controller.Start(s.context, runID, payload, func(event protocol.Message) {
+			if s.durable != nil && durableEvent(event.Type) {
+				var persistErr error
+				event, persistErr = s.durable.AppendEvent(s.context, runID, event)
+				if persistErr != nil {
+					return
+				}
+			}
 			_ = s.publish(event)
 		})
 		switch {
 		case errors.Is(err, turncontrol.ErrBusy):
-			s.reject(message.TraceID, "AGENT_BUSY", err.Error())
+			s.rejectRun(runID, "AGENT_BUSY", err.Error())
 		case err != nil:
-			s.reject(message.TraceID, "TURN_START_FAILED", err.Error())
+			s.rejectRun(runID, "TURN_START_FAILED", err.Error())
 		}
 	case protocol.TypeTurnInterrupt:
 		payload, err := protocol.PayloadAs[protocol.TurnInterruptPayload](message)
 		if err != nil {
 			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
 			return
+		}
+		if s.durable != nil {
+			_ = s.durable.Cancel(s.context, message.TraceID)
 		}
 		if err := s.controller.Interrupt(payload.ThreadID, payload.TurnID); err != nil {
 			s.reject(message.TraceID, "TURN_NOT_FOUND", err.Error())
@@ -142,8 +234,166 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 			}
 			s.reject(message.TraceID, "MESSAGE_INVALID", err.Error())
 		}
+	case protocol.TypeRuntimeReceivedAck:
+		// Receipt only confirms the Redis copy. The local outbox is retained.
+	case protocol.TypeRuntimeDurableAck:
+		payload, err := protocol.PayloadAs[protocol.RuntimeAckPayload](message)
+		if err != nil || payload.RunID == "" || payload.AgentSequence < 1 {
+			s.reject(message.TraceID, "MESSAGE_INVALID", "run_id and agent_sequence are required")
+			return
+		}
+		if s.durable != nil {
+			if err := s.durable.DurableAck(s.context, payload.RunID, payload.AgentSequence); err != nil {
+				s.reject(message.TraceID, "DURABLE_ACK_FAILED", err.Error())
+			}
+		}
+	case protocol.TypeBootstrapStart:
+		payload, err := protocol.PayloadAs[protocol.BootstrapStartPayload](message)
+		if err != nil || payload.SyncID == "" || payload.CommandID == "" {
+			s.reject(message.TraceID, "MESSAGE_INVALID", "sync_id and command_id are required")
+			return
+		}
+		go s.runBootstrap(payload)
+	case protocol.TypeBootstrapDurableAck:
+		payload, err := protocol.PayloadAs[protocol.BootstrapAckPayload](message)
+		if err != nil {
+			return
+		}
+		s.bootstrapMu.Lock()
+		waiter := s.bootstrapAcks[payload.SyncID]
+		s.bootstrapMu.Unlock()
+		if waiter != nil {
+			select {
+			case waiter <- payload:
+			default:
+			}
+		}
 	default:
 		s.reject(message.TraceID, "MESSAGE_INVALID", fmt.Sprintf("unsupported message type %q", message.Type))
+	}
+}
+
+func (s *Service) runBootstrap(command protocol.BootstrapStartPayload) {
+	if s.durable == nil {
+		return
+	}
+	snapshotID, last, err := s.durable.PrepareBootstrap(s.context, command.SyncID, command.CommandID)
+	if err != nil {
+		s.reject(command.SyncID, "BOOTSTRAP_STORE_FAILED", err.Error())
+		return
+	}
+	waiter := make(chan protocol.BootstrapAckPayload, 1)
+	s.bootstrapMu.Lock()
+	if _, exists := s.bootstrapAcks[command.SyncID]; exists {
+		s.bootstrapMu.Unlock()
+		return
+	}
+	s.bootstrapAcks[command.SyncID] = waiter
+	s.bootstrapMu.Unlock()
+	defer func() {
+		s.bootstrapMu.Lock()
+		delete(s.bootstrapAcks, command.SyncID)
+		s.bootstrapMu.Unlock()
+	}()
+
+	projects, err := s.inventory.Projects(s.context)
+	if err != nil {
+		s.reject(command.SyncID, "BOOTSTRAP_PROJECTS_FAILED", err.Error())
+		return
+	}
+	batchNo := int64(0)
+	for projectIndex := range projects {
+		project := projects[projectIndex]
+		threads, err := s.inventory.Threads(s.context, project.ID)
+		if err != nil {
+			s.reject(command.SyncID, "BOOTSTRAP_THREADS_FAILED", err.Error())
+			return
+		}
+		if len(threads) == 0 {
+			batch := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Project: &project}
+			if !s.sendBootstrapBatch(batch, last, waiter) {
+				return
+			}
+			batchNo++
+			continue
+		}
+		for _, thread := range threads {
+			detail := s.readBootstrapThread(project.ID, thread)
+			batch := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Project: &project, Thread: &detail}
+			if !s.sendBootstrapBatch(batch, last, waiter) {
+				return
+			}
+			batchNo++
+		}
+	}
+	final := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Done: true}
+	s.sendBootstrapBatch(final, last, waiter)
+}
+
+func (s *Service) readBootstrapThread(projectID string, thread protocol.Thread) protocol.ThreadDetail {
+	fallback := protocol.ThreadDetail{
+		ID: thread.ID, ProjectID: projectID, Title: thread.Title, Preview: thread.Preview,
+		Status: thread.Status, Source: thread.Source, CreatedAt: thread.UpdatedAt, UpdatedAt: thread.UpdatedAt,
+		Turns: []protocol.ThreadHistoryTurn{},
+	}
+	ctx, cancel := context.WithTimeout(s.context, s.bootstrapReadTimeout)
+	defer cancel()
+	detail, err := s.inventory.ReadThread(ctx, projectID, thread.ID)
+	if err != nil {
+		return fallback
+	}
+	return detail.Thread
+}
+
+func (s *Service) sendBootstrapBatch(batch protocol.BootstrapBatchPayload, last int64, waiter <-chan protocol.BootstrapAckPayload) bool {
+	checksumInput := batch
+	checksumInput.Checksum = ""
+	data, _ := json.Marshal(checksumInput)
+	sum := sha256.Sum256(data)
+	batch.Checksum = hex.EncodeToString(sum[:])
+	if batch.BatchNo <= last {
+		return true
+	}
+	message := s.message(protocol.TypeBootstrapBatch, batch.SyncID, batch)
+	if err := s.publish(message); err != nil {
+		return false
+	}
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case ack := <-waiter:
+			if ack.BatchNo == batch.BatchNo && ack.Checksum == batch.Checksum {
+				_ = s.durable.AckBootstrap(s.context, batch.SyncID, batch.BatchNo, batch.Checksum, batch.Done)
+				return true
+			}
+		case <-timer.C:
+			return false
+		case <-s.context.Done():
+			return false
+		}
+	}
+}
+
+func (s *Service) rejectRun(runID, code, text string) {
+	message := s.message(protocol.TypeTurnRejected, runID, protocol.TurnRejectedPayload{Code: code, Message: text, ExecutionContext: &s.capabilities})
+	if s.durable != nil {
+		var err error
+		message, err = s.durable.AppendEvent(s.context, runID, message)
+		if err != nil {
+			return
+		}
+	}
+	_ = s.publish(message)
+}
+
+func durableEvent(messageType string) bool {
+	switch messageType {
+	case protocol.TypeTurnStarted, protocol.TypeTurnOutput, protocol.TypeTurnItemStarted, protocol.TypeTurnItemDelta,
+		protocol.TypeTurnItemDone, protocol.TypeTurnCompleted, protocol.TypeTurnFailed, protocol.TypeTurnInterrupted:
+		return true
+	default:
+		return false
 	}
 }
 

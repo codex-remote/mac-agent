@@ -16,6 +16,7 @@ import (
 	"github.com/ai-coding-remote/mac-agent/internal/agent"
 	"github.com/ai-coding-remote/mac-agent/internal/codexapp"
 	"github.com/ai-coding-remote/mac-agent/internal/config"
+	"github.com/ai-coding-remote/mac-agent/internal/durable"
 	"github.com/ai-coding-remote/mac-agent/internal/inventory"
 	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	"github.com/ai-coding-remote/mac-agent/internal/relay"
@@ -70,6 +71,7 @@ func serve(arguments []string) int {
 	agentName := flags.String("name", base.AgentName, "Agent display name")
 	timeout := flags.Duration("timeout", base.TurnTimeout, "maximum duration of one turn")
 	logLines := flags.Int("log-buffer-lines", base.LogBufferLines, "recent output lines retained in memory")
+	runtimeDBPath := flags.String("runtime-db", base.RuntimeDBPath, "durable Runtime SQLite path")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
@@ -80,6 +82,7 @@ func serve(arguments []string) int {
 	base.AgentName = *agentName
 	base.TurnTimeout = *timeout
 	base.LogBufferLines = *logLines
+	base.RuntimeDBPath = *runtimeDBPath
 	if err := base.ValidateServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
@@ -123,6 +126,14 @@ func serve(arguments []string) int {
 		SupportsPermissionProfiles: true,
 	}
 	service := agent.NewService(ctx, base.AgentName, version, sender, capabilities, controller, projectInventory, client.Publish)
+	durableStore, err := durable.Open(base.RuntimeDBPath)
+	if err != nil {
+		logger.Error("Open durable Runtime SQLite", "path", base.RuntimeDBPath, "error", err)
+		return 1
+	}
+	defer durableStore.Close()
+	service.SetDurableStore(durableStore)
+	service.StartDurableReplay(2 * time.Second)
 	if err := client.Run(ctx, service.InitialMessages, service.Handle); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("Agent stopped", "error", err)
 		return 1

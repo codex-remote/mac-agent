@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
@@ -40,6 +41,15 @@ func (serviceInventory) ExecutionProfiles(context.Context, string) (protocol.Exe
 		ProjectID: "project-1", DefaultProfileID: ":workspace",
 		Profiles: []protocol.ExecutionProfile{{ID: ":workspace", Allowed: true}},
 	}, nil
+}
+
+type blockedBootstrapInventory struct {
+	serviceInventory
+}
+
+func (blockedBootstrapInventory) ReadThread(ctx context.Context, _, _ string) (protocol.ThreadDetailPayload, error) {
+	<-ctx.Done()
+	return protocol.ThreadDetailPayload{}, ctx.Err()
 }
 
 func TestServiceHandlesInventoryQueriesAndTurnStart(t *testing.T) {
@@ -131,5 +141,27 @@ func TestServiceAcceptsTerminalTurnAcknowledgement(t *testing.T) {
 	service.Handle(context.Background(), acknowledged)
 	if len(published) != 0 {
 		t.Fatalf("acknowledgement produced a response: %#v", published)
+	}
+}
+
+func TestBootstrapThreadReadTimeoutFallsBackToSessionMetadata(t *testing.T) {
+	controller := &serviceController{snapshot: turncontrol.Snapshot{Status: protocol.StatusIdle}}
+	service := NewService(
+		context.Background(), "mac", "test", protocol.Sender{Kind: "device", ID: "mac"},
+		testCapabilities, controller, blockedBootstrapInventory{}, func(protocol.Message) error { return nil },
+	)
+	service.bootstrapReadTimeout = 10 * time.Millisecond
+	updatedAt := time.Now().UTC()
+	thread := protocol.Thread{
+		ID: "thread-blocked", ProjectID: "project-1", Title: "Available title", Preview: "Available preview",
+		Status: "idle", Source: "appServer", UpdatedAt: updatedAt,
+	}
+
+	detail := service.readBootstrapThread("project-1", thread)
+	if detail.ID != thread.ID || detail.ProjectID != "project-1" || detail.Title != thread.Title || detail.Preview != thread.Preview {
+		t.Fatalf("unexpected fallback detail: %#v", detail)
+	}
+	if !detail.CreatedAt.Equal(updatedAt) || !detail.UpdatedAt.Equal(updatedAt) || len(detail.Turns) != 0 {
+		t.Fatalf("fallback timestamps or turns were not preserved: %#v", detail)
 	}
 }

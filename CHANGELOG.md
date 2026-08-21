@@ -10,6 +10,17 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 
 ## [Unreleased]
 
+### Added
+
+- Added WAL-backed Runtime SQLite with `agent_runs`, `result_outbox` and `bootstrap_syncs` durable state.
+- Added monotonic Agent event sequences, receipt/durable ACK handling and reconnect recovery.
+- Added in-connection replay of events that have not received a PostgreSQL durable ACK.
+- Added resumable Bootstrap Project/Thread/Turn batches with checksums and per-batch durable ACKs.
+
+### Fixed
+
+- Bootstrap history import now bounds each Thread detail read and falls back to session metadata, so one unavailable or oversized Thread cannot block the remaining catalog.
+
 ## [0.0.1] - 2026-08-13
 
 ### Added

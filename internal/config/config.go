@@ -25,6 +25,7 @@ type Config struct {
 	TurnTimeout    time.Duration
 	LogBufferLines int
 	MaxDiffBytes   int
+	RuntimeDBPath  string
 }
 
 func FromEnv() (Config, error) {
@@ -46,6 +47,7 @@ func FromEnv() (Config, error) {
 		TurnTimeout:    DefaultTurnTimeout,
 		LogBufferLines: DefaultLogBufferLines,
 		MaxDiffBytes:   DefaultMaxDiffBytes,
+		RuntimeDBPath:  defaultRuntimeDBPath(),
 	}
 	if value := os.Getenv("AGENT_TURN_TIMEOUT"); value != "" {
 		duration, err := time.ParseDuration(value)
@@ -62,6 +64,17 @@ func FromEnv() (Config, error) {
 		config.LogBufferLines = lines
 	}
 	return config, nil
+}
+
+func defaultRuntimeDBPath() string {
+	if value := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_DB_PATH")); value != "" {
+		return value
+	}
+	directory, err := os.UserConfigDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "codex-remote-agent.sqlite3")
+	}
+	return filepath.Join(directory, "Codex Remote", "agent-runtime.sqlite3")
 }
 
 func (c Config) ValidateServe() error {
