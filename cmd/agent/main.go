@@ -88,6 +88,7 @@ func serve(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
 	}
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	catalog, err := workspace.NewCodexCatalog(base.WorkspaceRoots, base.CodexStateFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace error:", err)
@@ -99,11 +100,9 @@ func serve(arguments []string) int {
 		return 2
 	}
 	if len(projects) == 0 {
-		fmt.Fprintln(os.Stderr, "workspace error: no Codex Desktop projects found within workspace roots")
-		return 2
+		logger.Info("No Codex projects found yet; agent will remain available", "workspace_roots", base.WorkspaceRoots)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	appServer, err := codexapp.StartProcess(ctx, base.CodexBinary, version, logger)

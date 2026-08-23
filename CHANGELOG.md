@@ -23,6 +23,7 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 
 ### Fixed
 
+- The managed Mac Agent now starts before Codex has recorded its first project, so a fresh Homebrew setup remains healthy while waiting for the user to open a workspace.
 - Bootstrap history import now bounds each Thread detail read and falls back to session metadata, so one unavailable or oversized Thread cannot block the remaining catalog.
 
 ## [0.0.1] - 2026-08-13
