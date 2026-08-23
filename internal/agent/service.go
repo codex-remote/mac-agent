@@ -27,6 +27,16 @@ type Inventory interface {
 	ExecutionProfiles(context.Context, string) (protocol.ExecutionProfileSnapshotPayload, error)
 }
 
+type SourceReader interface {
+	Read(context.Context, protocol.SourceReadPayload) (protocol.SourceSnapshotPayload, error)
+}
+
+type sourceReadError interface {
+	error
+	SourceCode() string
+	PublicMessage() string
+}
+
 type Publisher func(protocol.Message) error
 
 type DurableStore interface {
@@ -47,6 +57,7 @@ type Service struct {
 	capabilities         protocol.AgentCapabilitiesPayload
 	controller           TurnController
 	inventory            Inventory
+	sourceReader         SourceReader
 	publish              Publisher
 	durable              DurableStore
 	bootstrapMu          sync.Mutex
@@ -54,7 +65,8 @@ type Service struct {
 	bootstrapReadTimeout time.Duration
 }
 
-func (s *Service) SetDurableStore(store DurableStore) { s.durable = store }
+func (s *Service) SetDurableStore(store DurableStore)  { s.durable = store }
+func (s *Service) SetSourceReader(reader SourceReader) { s.sourceReader = reader }
 
 func (s *Service) StartDurableReplay(interval time.Duration) {
 	if s.durable == nil || interval <= 0 {
@@ -164,6 +176,27 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 			return
 		}
 		_ = s.publish(s.message(protocol.TypeThreadDetail, message.TraceID, detail))
+	case protocol.TypeSourceRead:
+		payload, err := protocol.PayloadAs[protocol.SourceReadPayload](message)
+		if err != nil || payload.ProjectID == "" || payload.Path == "" {
+			s.publishSourceFailure(message.TraceID, "SOURCE_INVALID", "A project and source path are required.")
+			return
+		}
+		if s.sourceReader == nil {
+			s.publishSourceFailure(message.TraceID, "SOURCE_UNAVAILABLE", "Source reading is unavailable on this Mac Agent.")
+			return
+		}
+		snapshot, err := s.sourceReader.Read(s.context, payload)
+		if err != nil {
+			var publicError sourceReadError
+			if errors.As(err, &publicError) {
+				s.publishSourceFailure(message.TraceID, publicError.SourceCode(), publicError.PublicMessage())
+			} else {
+				s.publishSourceFailure(message.TraceID, "SOURCE_READ_FAILED", "The source file could not be read.")
+			}
+			return
+		}
+		_ = s.publish(s.message(protocol.TypeSourceSnapshot, message.TraceID, snapshot))
 	case protocol.TypeTurnStart:
 		payload, err := protocol.PayloadAs[protocol.TurnStartPayload](message)
 		if err != nil {
@@ -273,6 +306,10 @@ func (s *Service) Handle(_ context.Context, message protocol.Message) {
 	}
 }
 
+func (s *Service) publishSourceFailure(traceID, code, message string) {
+	_ = s.publish(s.message(protocol.TypeSourceReadFailed, traceID, protocol.SourceReadFailedPayload{Code: code, Message: message}))
+}
+
 func (s *Service) runBootstrap(command protocol.BootstrapStartPayload) {
 	if s.durable == nil {
 		return
@@ -296,21 +333,21 @@ func (s *Service) runBootstrap(command protocol.BootstrapStartPayload) {
 		s.bootstrapMu.Unlock()
 	}()
 
-	projects, err := s.inventory.Projects(s.context)
+	projects, totalSessions, err := s.loadBootstrapSnapshot()
 	if err != nil {
-		s.reject(command.SyncID, "BOOTSTRAP_PROJECTS_FAILED", err.Error())
+		s.reject(command.SyncID, "BOOTSTRAP_INVENTORY_FAILED", err.Error())
 		return
 	}
 	batchNo := int64(0)
+	processedSessions := int64(0)
 	for projectIndex := range projects {
-		project := projects[projectIndex]
-		threads, err := s.inventory.Threads(s.context, project.ID)
-		if err != nil {
-			s.reject(command.SyncID, "BOOTSTRAP_THREADS_FAILED", err.Error())
-			return
-		}
+		project := projects[projectIndex].project
+		threads := projects[projectIndex].threads
 		if len(threads) == 0 {
-			batch := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Project: &project}
+			batch := protocol.BootstrapBatchPayload{
+				CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo,
+				TotalSessions: totalSessions, ProcessedSessions: processedSessions, Project: &project,
+			}
 			if !s.sendBootstrapBatch(batch, last, waiter) {
 				return
 			}
@@ -319,15 +356,50 @@ func (s *Service) runBootstrap(command protocol.BootstrapStartPayload) {
 		}
 		for _, thread := range threads {
 			detail := s.readBootstrapThread(project.ID, thread)
-			batch := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Project: &project, Thread: &detail}
+			processedSessions++
+			batch := protocol.BootstrapBatchPayload{
+				CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo,
+				TotalSessions: totalSessions, ProcessedSessions: processedSessions, Project: &project, Thread: &detail,
+			}
 			if !s.sendBootstrapBatch(batch, last, waiter) {
 				return
 			}
 			batchNo++
 		}
 	}
-	final := protocol.BootstrapBatchPayload{CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo, Done: true}
+	final := protocol.BootstrapBatchPayload{
+		CommandID: command.CommandID, SyncID: command.SyncID, SnapshotID: snapshotID, BatchNo: batchNo,
+		TotalSessions: totalSessions, ProcessedSessions: processedSessions,
+		ReconciliationSafe: bootstrapReconciliationSafe(last), Done: true,
+	}
 	s.sendBootstrapBatch(final, last, waiter)
+}
+
+func bootstrapReconciliationSafe(lastDurableBatchNo int64) bool {
+	return lastDurableBatchNo < 0
+}
+
+type bootstrapProjectSnapshot struct {
+	project protocol.Project
+	threads []protocol.Thread
+}
+
+func (s *Service) loadBootstrapSnapshot() ([]bootstrapProjectSnapshot, int64, error) {
+	projects, err := s.inventory.Projects(s.context)
+	if err != nil {
+		return nil, 0, err
+	}
+	snapshot := make([]bootstrapProjectSnapshot, 0, len(projects))
+	totalSessions := int64(0)
+	for _, project := range projects {
+		threads, err := s.inventory.Threads(s.context, project.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		totalSessions += int64(len(threads))
+		snapshot = append(snapshot, bootstrapProjectSnapshot{project: project, threads: threads})
+	}
+	return snapshot, totalSessions, nil
 }
 
 func (s *Service) readBootstrapThread(projectID string, thread protocol.Thread) protocol.ThreadDetail {

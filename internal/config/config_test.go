@@ -44,3 +44,15 @@ func TestFromEnvUsesDefaultWorkspaceRoot(t *testing.T) {
 		t.Fatalf("WorkspaceRoots = %#v, want [%q]", got.WorkspaceRoots, DefaultWorkspaceRoot)
 	}
 }
+
+func TestFromEnvUsesThreeHourTurnTimeoutByDefault(t *testing.T) {
+	t.Setenv("AGENT_TURN_TIMEOUT", "")
+
+	got, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TurnTimeout != 3*time.Hour {
+		t.Fatalf("TurnTimeout = %s, want 3h", got.TurnTimeout)
+	}
+}

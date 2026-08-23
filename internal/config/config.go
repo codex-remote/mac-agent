@@ -11,7 +11,7 @@ import (
 
 const (
 	DefaultWorkspaceRoot  = "/Users/leehooo/work"
-	DefaultTurnTimeout    = 30 * time.Minute
+	DefaultTurnTimeout    = 3 * time.Hour
 	DefaultLogBufferLines = 500
 	DefaultMaxDiffBytes   = 128 * 1024
 )

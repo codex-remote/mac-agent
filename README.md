@@ -16,6 +16,7 @@ AI Coding Remote 的本地执行端。它主动连接 Relay，读取 Codex Deskt
 - WebSocket 自动重连和 JSON 结构化服务日志。
 - 连接时发布 `agent.capabilities` 执行权限快照，并在 Agent 拒绝请求时附带相同的 `execution_context`。
 - 按项目查询 App Server `permissionProfile/list`，把允许的执行档位提供给 iPhone，并在 Thread 与 Turn 两层应用所选 profile。
+- 处理 Run Server 内部发送的 `source.read`，只读取可信项目根目录内的当前文本源码，并返回带目标行、范围、哈希和修改时间的有界窗口。
 
 当前无鉴权、数据库、业务 Task、队列和多 Mac 路由。协议唯一版本为 `2.0`，不兼容已删除的 `1.0 run.*`、`--working-dir` 和 `run` 命令。
 
@@ -68,9 +69,10 @@ make build
 ./dev debug
 ./dev simulator
 ./dev iphone
+./dev mobileweb
 ```
 
-`debug` 使用 `18765`，供 Apifox 和手动协议调试；`simulator` 使用 `18767`，供本机 iPhone Simulator；`iphone` 使用 `18768`，供真机 iPhone。每个 profile 有独立的 Relay、Mac Agent、`launchctl` label、PID 和日志，可以同时运行；重复执行只重启指定 profile。脚本依次从 `CODEX_BINARY`、当前 `PATH`、ChatGPT App 和 Codex App 中解析 Codex CLI，自动展开符号链接，并把真实可执行文件路径传给后台服务。
+`debug` 使用 `18765`，供 Apifox 和手动协议调试；`simulator` 使用 `18767`，供本机 iPhone Simulator；`iphone` 使用 `18768`，供真机 iPhone；`mobileweb` 使用 `18775`，供 Mobile Web Runtime。每个 profile 有独立的 Relay、Mac Agent、`launchctl` label、PID 和日志，可以同时运行；重复执行只重启指定 profile。脚本会等待旧 Agent 完全退出后再启动新实例，避免并发占用 Runtime SQLite。
 
 两套 Agent 会访问相同工作区。MVP 尚无跨 profile 的 Turn 锁，请勿同时对同一个 Git 项目发起修改任务。
 
@@ -99,7 +101,9 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
   --workspace-root /Users/leehooo/work/work-projects
 ```
 
-手机只能使用 Agent 返回的 `project_id`，不能传入任意路径。项目必须同时存在于 Codex Desktop 的 `project-order` 中，且根目录位于允许列表内；已经从侧边栏移除但仍残留在状态文件中的项目不会返回。
+手机只能选择 Agent 返回的 `project_id`。源码查看可以附带项目相对路径；历史回答中的绝对路径仅作为兼容输入，并且必须在解析符号链接后仍位于该项目根目录内。项目必须同时存在于 Codex Desktop 的 `project-order` 中，且根目录位于允许列表内；已经从侧边栏移除但仍残留在状态文件中的项目不会返回。
+
+源码查看读取点击时的当前工作树，不保存回答生成时的历史快照。Agent 拒绝目录、路径穿越、逃逸项目的符号链接、二进制、敏感凭据文件模式和超过 1 MiB 的文件；返回内容按 Relay WebSocket 帧上限裁剪到目标行附近。源码正文和完整路径不得进入服务日志。
 
 项目列表的展示名和顺序来自 Codex Desktop。Thread 元数据和运行状态来自官方 `thread/list`；`preview` 保留其原始会话预览语义，`latest_message_preview` 由最新摘要 Turn 中最后一个用户或助手消息生成。Mac Agent 会优先使用 Desktop 保存的 Thread-Project 归属，再按最具体的项目根目录归属 Mac Agent 新建的 Thread。
 
@@ -130,7 +134,7 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
 | `AGENT_CODEX_STATE_FILE` | `$CODEX_HOME/.codex-global-state.json` 或 `~/.codex/.codex-global-state.json` | Codex Desktop 全局状态文件 |
 | `AGENT_CODEX_BINARY` | `codex` | Codex CLI 路径或命令名 |
 | `AGENT_NAME` | hostname | iPhone 展示名称 |
-| `AGENT_TURN_TIMEOUT` | `30m` | 单 Turn 最大时长 |
+| `AGENT_TURN_TIMEOUT` | `3h` | 单 Turn 最大时长 |
 | `AGENT_LOG_BUFFER_LINES` | `500` | 重连快照保留行数 |
 
 示例：
@@ -150,6 +154,7 @@ internal/codexapp/  Codex App Server 进程与 JSON-RPC Client
 internal/inventory/ Project 与 Thread 快照
 internal/workspace/ Codex Desktop 项目适配器、Thread 归属与路径边界
 internal/runner/    Thread/Turn 适配与事件转换
+internal/source/    项目范围内的只读源码窗口
 internal/turn/      单 Turn Controller
 internal/result/    Git 文件与 Diff 收集
 internal/relay/     WebSocket、重连与收发队列

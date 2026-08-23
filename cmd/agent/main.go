@@ -22,6 +22,7 @@ import (
 	"github.com/ai-coding-remote/mac-agent/internal/relay"
 	"github.com/ai-coding-remote/mac-agent/internal/result"
 	"github.com/ai-coding-remote/mac-agent/internal/runner"
+	"github.com/ai-coding-remote/mac-agent/internal/source"
 	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
 	"github.com/ai-coding-remote/mac-agent/internal/workspace"
 )
@@ -124,8 +125,10 @@ func serve(arguments []string) int {
 		WritableScope: "selected_project", NetworkAccess: false, CanRequestApproval: false,
 		HostProcessControl: false, UserLibraryWrite: false, XcodeDeviceControl: false,
 		SupportsPermissionProfiles: true,
+		SupportsSourceRead:         true,
 	}
 	service := agent.NewService(ctx, base.AgentName, version, sender, capabilities, controller, projectInventory, client.Publish)
+	service.SetSourceReader(source.New(catalog))
 	durableStore, err := durable.Open(base.RuntimeDBPath)
 	if err != nil {
 		logger.Error("Open durable Runtime SQLite", "path", base.RuntimeDBPath, "error", err)

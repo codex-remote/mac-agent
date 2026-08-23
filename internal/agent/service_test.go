@@ -25,6 +25,7 @@ type serviceInventory struct{}
 
 var testCapabilities = protocol.AgentCapabilitiesPayload{
 	Restricted: true, SandboxMode: "workspace-write", ApprovalPolicy: "never", WritableScope: "selected_project",
+	SupportsSourceRead: true,
 }
 
 func (serviceInventory) Projects(context.Context) ([]protocol.Project, error) {
@@ -50,6 +51,30 @@ type blockedBootstrapInventory struct {
 func (blockedBootstrapInventory) ReadThread(ctx context.Context, _, _ string) (protocol.ThreadDetailPayload, error) {
 	<-ctx.Done()
 	return protocol.ThreadDetailPayload{}, ctx.Err()
+}
+
+type progressBootstrapInventory struct {
+	serviceInventory
+}
+
+type serviceSourceReader struct {
+	snapshot protocol.SourceSnapshotPayload
+	err      error
+}
+
+func (r serviceSourceReader) Read(context.Context, protocol.SourceReadPayload) (protocol.SourceSnapshotPayload, error) {
+	return r.snapshot, r.err
+}
+
+func (progressBootstrapInventory) Projects(context.Context) ([]protocol.Project, error) {
+	return []protocol.Project{{ID: "project-1"}, {ID: "project-2"}}, nil
+}
+
+func (progressBootstrapInventory) Threads(_ context.Context, projectID string) ([]protocol.Thread, error) {
+	if projectID == "project-1" {
+		return []protocol.Thread{{ID: "thread-1"}, {ID: "thread-2"}}, nil
+	}
+	return []protocol.Thread{{ID: "thread-3"}}, nil
 }
 
 func TestServiceHandlesInventoryQueriesAndTurnStart(t *testing.T) {
@@ -90,6 +115,48 @@ func TestServiceHandlesInventoryQueriesAndTurnStart(t *testing.T) {
 	service.Handle(context.Background(), start)
 	if !controller.started {
 		t.Fatal("controller was not started")
+	}
+}
+
+func TestServiceHandlesSourceRead(t *testing.T) {
+	controller := &serviceController{snapshot: turncontrol.Snapshot{Status: protocol.StatusIdle}}
+	var published []protocol.Message
+	service := NewService(context.Background(), "mac", "test", protocol.Sender{Kind: "device", ID: "mac"}, testCapabilities, controller, serviceInventory{}, func(message protocol.Message) error {
+		published = append(published, message)
+		return nil
+	})
+	service.SetSourceReader(serviceSourceReader{snapshot: protocol.SourceSnapshotPayload{
+		ProjectID: "project-1", Path: "src/main.go", Content: "package main", StartLine: 1, EndLine: 1, TotalLines: 1, FocusLine: 1,
+	}})
+	request, _ := protocol.NewMessage(protocol.TypeSourceRead, "source-1", protocol.Sender{Kind: "relay", ID: "run-server"}, protocol.SourceReadPayload{
+		ProjectID: "project-1", Path: "src/main.go", FocusLine: 1,
+	})
+	service.Handle(context.Background(), request)
+
+	if len(published) != 1 || published[0].Type != protocol.TypeSourceSnapshot || published[0].TraceID != "source-1" {
+		t.Fatalf("unexpected source response: %#v", published)
+	}
+	payload, err := protocol.PayloadAs[protocol.SourceSnapshotPayload](published[0])
+	if err != nil || payload.Path != "src/main.go" || payload.Content != "package main" {
+		t.Fatalf("unexpected source payload: %#v %v", payload, err)
+	}
+}
+
+func TestServiceRejectsSourceReadWhenReaderUnavailable(t *testing.T) {
+	var published []protocol.Message
+	service := NewService(context.Background(), "mac", "test", protocol.Sender{Kind: "device", ID: "mac"}, testCapabilities, &serviceController{}, serviceInventory{}, func(message protocol.Message) error {
+		published = append(published, message)
+		return nil
+	})
+	request, _ := protocol.NewMessage(protocol.TypeSourceRead, "source-1", protocol.Sender{Kind: "relay", ID: "run-server"}, protocol.SourceReadPayload{ProjectID: "project-1", Path: "main.go"})
+	service.Handle(context.Background(), request)
+
+	if len(published) != 1 || published[0].Type != protocol.TypeSourceReadFailed {
+		t.Fatalf("unexpected source failure: %#v", published)
+	}
+	payload, _ := protocol.PayloadAs[protocol.SourceReadFailedPayload](published[0])
+	if payload.Code != "SOURCE_UNAVAILABLE" {
+		t.Fatalf("unexpected source failure payload: %#v", payload)
 	}
 }
 
@@ -163,5 +230,31 @@ func TestBootstrapThreadReadTimeoutFallsBackToSessionMetadata(t *testing.T) {
 	}
 	if !detail.CreatedAt.Equal(updatedAt) || !detail.UpdatedAt.Equal(updatedAt) || len(detail.Turns) != 0 {
 		t.Fatalf("fallback timestamps or turns were not preserved: %#v", detail)
+	}
+}
+
+func TestBootstrapSnapshotFreezesSessionTotal(t *testing.T) {
+	service := NewService(
+		context.Background(), "mac", "test", protocol.Sender{Kind: "device", ID: "mac"},
+		testCapabilities, &serviceController{}, progressBootstrapInventory{}, func(protocol.Message) error { return nil },
+	)
+
+	projects, total, err := service.loadBootstrapSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(projects) != 2 || len(projects[0].threads) != 2 || len(projects[1].threads) != 1 {
+		t.Fatalf("snapshot projects=%#v total=%d", projects, total)
+	}
+}
+
+func TestBootstrapReconciliationRequiresAnUnresumedSnapshot(t *testing.T) {
+	if !bootstrapReconciliationSafe(-1) {
+		t.Fatal("new snapshot should permit reconciliation")
+	}
+	for _, last := range []int64{0, 1, 100} {
+		if bootstrapReconciliationSafe(last) {
+			t.Fatalf("resumed snapshot at batch %d permitted reconciliation", last)
+		}
 	}
 }

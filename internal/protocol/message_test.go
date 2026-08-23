@@ -45,3 +45,28 @@ func TestDecodeRejectsUnsupportedVersion(t *testing.T) {
 		t.Fatal("expected unsupported version error")
 	}
 }
+
+func TestBootstrapBatchProgressRoundTrip(t *testing.T) {
+	message, err := NewMessage(TypeBootstrapBatch, "sync-1", Sender{Kind: "device", ID: "mac"}, BootstrapBatchPayload{
+		CommandID: "command-1", SyncID: "sync-1", SnapshotID: "snapshot-1", BatchNo: 4,
+		TotalSessions: 10, ProcessedSessions: 5, ReconciliationSafe: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := PayloadAs[BootstrapBatchPayload](decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TotalSessions != 10 || payload.ProcessedSessions != 5 || !payload.ReconciliationSafe {
+		t.Fatalf("unexpected bootstrap progress: %#v", payload)
+	}
+}

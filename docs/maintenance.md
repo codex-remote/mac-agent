@@ -110,6 +110,38 @@ CODEX_BINARY=/Applications/ChatGPT.app/Contents/Resources/codex ./dev iphone
 
 验证证据：Shell 回归测试检查 plist 不包含 `KeepAlive`、ACK 前不接触设备、ACK 后只有一次安装和启动，并确认终态触发 `bootout`。真实维护验证还应确认完成日志只有一组安装/启动记录，且精确 label 已从 `launchctl` 消失。
 
+## 常见问题：断线后的历史同步错误隐藏项目
+
+症状：Mobile Web 发起历史同步时 Agent 或 Relay 短暂断线；任务恢复并显示完成后，仍存在于 Codex Desktop 的项目或会话从 Runtime 项目树消失。
+
+影响范围：已经 durable 提交至少一个 Bootstrap 批次、随后通过同一 `sync_id` 和批次水位续传的同步。客户端退出本身不影响任务，因为 Sync Job 和 Command Outbox 由 Run Server 持久化。
+
+已验证根因：Agent 只持久化 `snapshot_id` 和最新 durable 批次号，断线重试会重新读取项目目录。若目录内容或排序在两次读取之间变化，已提交前缀与新读取后缀不是同一份完整清单，不能安全用于“缺失即隐藏”的删除对账。
+
+快速检查：查询 `GET /v1/runtime/bootstrap-syncs/{sync_id}`。`status=completed` 且 `reconciliation_applied=false` 表示数据导入完成，但本次因续传未执行删除对账；这不是数据库丢失。Mobile Web 会自动再创建一次全新同步，最多重试一轮。
+
+恢复步骤：保持 Agent 在线后再次点击历史同步。新的未续传快照完成时 `reconciliation_applied=true`，缺失项目和 Codex 会话才会被软归档；重新加入 Codex Desktop 的项目会自动恢复。不要手工删除 PostgreSQL Project、Session 或 Run 记录。
+
+预防机制：Agent 仅在启动水位为 `-1` 时于最终批次发送 `reconciliation_safe=true`。Run Server 只在该最终批次的同一事务内归档缺失资源；未完成快照、旧 Agent 和断连续传均为 import-only。仍有活跃 Run 或在同步开始后被实时刷新过的项目不会归档。
+
+验证证据：Mac Agent 单元测试覆盖新快照与续传水位判定；Relay PostgreSQL 集成测试覆盖中间批次不隐藏、续传终态不隐藏、完整终态归档，以及项目重新出现后的恢复。
+
+## 常见问题：快速重启后 Agent 保持离线
+
+症状：替换 `mobileweb` Mac Agent 后 Relay 已恢复，但 `/status` 长时间显示 `agent_connected: false`，新 Agent 的日志没有正常启动记录。
+
+影响范围：旧 Agent 尚未完全退出时立即提交同一 profile 的替换进程。Relay、Mobile Web 和其他 Agent profile 不受影响。
+
+已验证根因：`launchctl remove` 返回时旧进程可能仍在处理取消和关闭 Codex App Server，并短暂持有共享 Runtime SQLite。立即提交新实例会形成启动竞态。
+
+快速检查：精确检查 `mac-agent serve` 且 Relay URL 为 `ws://127.0.0.1:18775/ws/agent` 的进程，再查看 `launchctl print gui/$(id -u)/com.ai-coding-remote.mac-agent.mobileweb`。不要按进程名批量停止其他 profile。
+
+恢复步骤：从 Terminal 或 Codex Desktop 运行 `../mobile-web/deploy.sh`。脚本会等待旧 Agent 完全退出，再依次恢复 Relay、Agent 和两个 Mobile Web 实例。
+
+预防机制：`./dev mobileweb` 在 TERM 和必要的 KILL 后都确认精确旧 PID 已退出；未退出时拒绝启动竞争实例。`deploy.sh` 还会拒绝从该 Agent 承载的 Turn 内同步自重启。
+
+验证证据：Shell 静态检查覆盖 profile 和自重启保护，真实快速部署需确认 18775、4173、4174 正常监听且 `/status` 返回 `agent_connected: true`；连续第二次部署应得到相同结果。
+
 ## 更新维护规则
 
 当 ChatGPT/Codex 升级改变可执行文件布局、App Server 参数或配套进程时，同时更新：

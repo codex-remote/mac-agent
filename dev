@@ -6,10 +6,11 @@ project_dir="$(cd "$repo_dir/.." && pwd)"
 relay_run="$project_dir/relay-server/run"
 
 usage() {
-	echo "Usage: ./dev {debug|simulator|iphone}" >&2
+	echo "Usage: ./dev {debug|simulator|iphone|mobileweb}" >&2
 	echo "  debug      Manual/Apifox stack on port 18765" >&2
 	echo "  simulator  iPhone Simulator stack on port 18767" >&2
 	echo "  iphone     Physical iPhone stack on port 18768" >&2
+	echo "  mobileweb  Mobile Web Runtime stack on port 18775" >&2
 }
 
 if [[ "$#" -ne 1 ]]; then
@@ -27,6 +28,9 @@ simulator)
 	;;
 iphone)
 	relay_port="18768"
+	;;
+mobileweb)
+	relay_port="18775"
 	;;
 *)
 	usage
@@ -177,6 +181,18 @@ if [[ "${#agent_pids[@]}" -gt 0 ]]; then
 	for pid in "${agent_pids[@]}"; do
 		kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
 	done
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		remaining=0
+		for pid in "${agent_pids[@]}"; do
+			kill -0 "$pid" 2>/dev/null && remaining=1
+		done
+		[[ "$remaining" -eq 0 ]] && break
+		sleep 0.1
+	done
+	if [[ "$remaining" -ne 0 ]]; then
+		echo "Mac Agent process did not exit after SIGKILL; refusing to start a competing instance." >&2
+		exit 1
+	fi
 fi
 rm -f "$pid_file"
 

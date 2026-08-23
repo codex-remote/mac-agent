@@ -16,6 +16,10 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 - Added monotonic Agent event sequences, receipt/durable ACK handling and reconnect recovery.
 - Added in-connection replay of events that have not received a PostgreSQL durable ACK.
 - Added resumable Bootstrap Project/Thread/Turn batches with checksums and per-batch durable ACKs.
+- Bootstrap snapshots now freeze the session manifest before detail reads and report processed/total session counts for determinate client progress.
+- Bootstrap completion now explicitly permits destructive reconciliation only for an unresumed manifest; reconnect recovery remains import-only so a regenerated batch order cannot hide valid Runtime Projects or Sessions.
+- Added authenticated Runtime source viewing support through `source.read`, with project-root and symlink containment, sensitive-file and binary rejection, bounded line windows, content hashes, and no durable source storage.
+- Added the `mobileweb` Relay/Agent launcher profile on port `18775` and an exact process-exit barrier before replacement instances open the shared Runtime SQLite.
 
 ### Fixed
 
