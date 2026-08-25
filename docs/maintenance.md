@@ -134,13 +134,13 @@ CODEX_BINARY=/Applications/ChatGPT.app/Contents/Resources/codex ./dev iphone
 
 已验证根因：`launchctl remove` 返回时旧进程可能仍在处理取消和关闭 Codex App Server，并短暂持有共享 Runtime SQLite。立即提交新实例会形成启动竞态。
 
-快速检查：精确检查 `mac-agent serve` 且 Relay URL 为 `ws://127.0.0.1:18775/ws/agent` 的进程，再查看 `launchctl print gui/$(id -u)/com.ai-coding-remote.mac-agent.mobileweb`。不要按进程名批量停止其他 profile。
+快速检查：源码工作区快速部署精确检查 `mac-agent serve` 且 Relay URL 为 `ws://127.0.0.1:18875/ws/agent` 的进程，再查看 `launchctl print gui/$(id -u)/com.ai-coding-remote.mac-agent.mobileweb-debug`。不要按进程名批量停止其他 profile。
 
 恢复步骤：从 Terminal 或 Codex Desktop 运行 `../mobile-web/deploy.sh`。脚本会等待旧 Agent 完全退出，再依次恢复 Relay、Agent 和两个 Mobile Web 实例。
 
 预防机制：`./dev mobileweb` 在 TERM 和必要的 KILL 后都确认精确旧 PID 已退出；未退出时拒绝启动竞争实例。`deploy.sh` 还会拒绝从该 Agent 承载的 Turn 内同步自重启。
 
-验证证据：Shell 静态检查覆盖 profile 和自重启保护，真实快速部署需确认 18775、4173、4174 正常监听且 `/status` 返回 `agent_connected: true`；连续第二次部署应得到相同结果。
+验证证据：Shell 静态检查覆盖 profile 和自重启保护，真实快速部署需确认 18875、18874、4173、4174 正常监听且 `/status` 返回 `agent_connected: true`；连续第二次部署应得到相同结果。Homebrew Runtime 的 18774、18775、18776 不应被本地部署替换。
 
 ## 更新维护规则
 

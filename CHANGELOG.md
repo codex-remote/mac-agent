@@ -20,6 +20,7 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 - Bootstrap completion now explicitly permits destructive reconciliation only for an unresumed manifest; reconnect recovery remains import-only so a regenerated batch order cannot hide valid Runtime Projects or Sessions.
 - Added authenticated Runtime source viewing support through `source.read`, with project-root and symlink containment, sensitive-file and binary rejection, bounded line windows, content hashes, and no durable source storage.
 - Added the `mobileweb` Relay/Agent launcher profile on port `18775` and an exact process-exit barrier before replacement instances open the shared Runtime SQLite.
+- Added the isolated `mobileweb-debug` Relay/Agent launcher profile on port `18875` for source-worktree `devrun crweb` deployments, leaving the release-compatible `mobileweb` profile unchanged.
 
 ### Fixed
 

@@ -6,11 +6,12 @@ project_dir="$(cd "$repo_dir/.." && pwd)"
 relay_run="$project_dir/relay-server/run"
 
 usage() {
-	echo "Usage: ./dev {debug|simulator|iphone|mobileweb}" >&2
+	echo "Usage: ./dev {debug|simulator|iphone|mobileweb|mobileweb-debug}" >&2
 	echo "  debug      Manual/Apifox stack on port 18765" >&2
 	echo "  simulator  iPhone Simulator stack on port 18767" >&2
 	echo "  iphone     Physical iPhone stack on port 18768" >&2
 	echo "  mobileweb  Mobile Web Runtime stack on port 18775" >&2
+	echo "  mobileweb-debug  Local Mobile Web debug stack on port 18875" >&2
 }
 
 if [[ "$#" -ne 1 ]]; then
@@ -31,6 +32,9 @@ iphone)
 	;;
 mobileweb)
 	relay_port="18775"
+	;;
+mobileweb-debug)
+	relay_port="18875"
 	;;
 *)
 	usage

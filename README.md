@@ -72,7 +72,7 @@ make build
 ./dev mobileweb
 ```
 
-`debug` 使用 `18765`，供 Apifox 和手动协议调试；`simulator` 使用 `18767`，供本机 iPhone Simulator；`iphone` 使用 `18768`，供真机 iPhone；`mobileweb` 使用 `18775`，供 Mobile Web Runtime。每个 profile 有独立的 Relay、Mac Agent、`launchctl` label、PID 和日志，可以同时运行；重复执行只重启指定 profile。脚本会等待旧 Agent 完全退出后再启动新实例，避免并发占用 Runtime SQLite。
+`debug` 使用 `18765`，供 Apifox 和手动协议调试；`simulator` 使用 `18767`，供本机 iPhone Simulator；`iphone` 使用 `18768`，供真机 iPhone；`mobileweb` 使用 `18775`，保留给 Homebrew Runtime/发布兼容链路；`mobileweb-debug` 使用 `18875`，供源码工作区的 `devrun crweb`。每个 profile 有独立的 Relay、Mac Agent、`launchctl` label、PID 和日志，可以同时运行；重复执行只重启指定 profile。脚本会等待旧 Agent 完全退出后再启动新实例，避免并发占用 Runtime SQLite。
 
 两套 Agent 会访问相同工作区。MVP 尚无跨 profile 的 Turn 锁，请勿同时对同一个 Git 项目发起修改任务。
 
