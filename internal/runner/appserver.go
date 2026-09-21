@@ -57,16 +57,8 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 		return Result{}, err
 	}
 	events := make(chan appServerEvent, 512)
-	terminal := make(chan appServerEvent, 1)
 	a.Client.SetNotificationHandler(func(notification codexapp.Notification) {
 		if event, ok := translateNotification(notification); ok {
-			if event.kind == "completed" {
-				select {
-				case terminal <- event:
-				case <-ctx.Done():
-				}
-				return
-			}
 			select {
 			case events <- event:
 			case <-ctx.Done():
@@ -91,30 +83,31 @@ func (a AppServer) Run(ctx context.Context, request Request, emit func(Event)) (
 	var summary strings.Builder
 	for {
 		select {
-		case event := <-terminal:
+		case event := <-events:
 			if event.threadID != thread.ID || event.turn.ID != turn.ID {
 				continue
 			}
-			duration := time.Since(startedAt)
-			if event.turn.DurationMS != nil {
-				duration = time.Duration(*event.turn.DurationMS) * time.Millisecond
-			}
-			result := Result{ThreadID: thread.ID, TurnID: turn.ID, Duration: duration, Summary: strings.TrimSpace(summary.String())}
-			switch event.turn.Status {
-			case "completed":
-				return result, nil
-			case "interrupted":
-				return result, ErrTurnInterrupted
-			case "failed":
-				message := "Codex turn failed"
-				if event.turn.Error != nil && event.turn.Error.Message != "" {
-					message = event.turn.Error.Message
+			if event.kind == "completed" {
+				duration := time.Since(startedAt)
+				if event.turn.DurationMS != nil {
+					duration = time.Duration(*event.turn.DurationMS) * time.Millisecond
 				}
-				return result, errors.New(message)
-			default:
-				return result, fmt.Errorf("unexpected Codex turn status %q", event.turn.Status)
+				result := Result{ThreadID: thread.ID, TurnID: turn.ID, Duration: duration, Summary: strings.TrimSpace(summary.String())}
+				switch event.turn.Status {
+				case "completed":
+					return result, nil
+				case "interrupted":
+					return result, ErrTurnInterrupted
+				case "failed":
+					message := "Codex turn failed"
+					if event.turn.Error != nil && event.turn.Error.Message != "" {
+						message = event.turn.Error.Message
+					}
+					return result, errors.New(message)
+				default:
+					return result, fmt.Errorf("unexpected Codex turn status %q", event.turn.Status)
+				}
 			}
-		case event := <-events:
 			if event.threadID != thread.ID || (event.turn.ID != "" && event.turn.ID != turn.ID) {
 				continue
 			}
