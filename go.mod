@@ -1,4 +1,4 @@
-module github.com/ai-coding-remote/mac-agent
+module github.com/codex-remote/mac-agent
 
 go 1.23.0
 

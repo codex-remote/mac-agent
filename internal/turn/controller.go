@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/buffer"
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	"github.com/ai-coding-remote/mac-agent/internal/result"
-	"github.com/ai-coding-remote/mac-agent/internal/runner"
-	"github.com/ai-coding-remote/mac-agent/internal/workspace"
+	"github.com/codex-remote/mac-agent/internal/buffer"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/result"
+	"github.com/codex-remote/mac-agent/internal/runner"
+	"github.com/codex-remote/mac-agent/internal/workspace"
 )
 
 const (

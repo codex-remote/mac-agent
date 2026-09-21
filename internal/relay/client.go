@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	"github.com/coder/websocket"
+	"github.com/codex-remote/mac-agent/internal/protocol"
 )
 
 var ErrOutboundQueueFull = errors.New("Relay outbound queue is full")

@@ -44,7 +44,7 @@ func TestGreet(t *testing.T) {
 EOF
 
 git -C "$project_dir" init -q -b main
-git -C "$project_dir" config user.name "AI Coding Remote Demo"
+git -C "$project_dir" config user.name "Codex Remote Demo"
 git -C "$project_dir" config user.email "demo@example.invalid"
 git -C "$project_dir" add go.mod greeting.go greeting_test.go
 git -C "$project_dir" commit -qm "test: create failing greeting requirement"

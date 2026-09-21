@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	DefaultWorkspaceRoot  = "/Users/leehooo/work"
 	DefaultTurnTimeout    = 3 * time.Hour
 	DefaultLogBufferLines = 500
 	DefaultMaxDiffBytes   = 128 * 1024
@@ -36,7 +35,11 @@ func FromEnv() (Config, error) {
 	}
 	workspaceRoots := splitWorkspaceRoots(os.Getenv("AGENT_WORKSPACE_ROOTS"))
 	if len(workspaceRoots) == 0 {
-		workspaceRoots = []string{DefaultWorkspaceRoot}
+		workspaceRoot, err := defaultWorkspaceRoot()
+		if err != nil {
+			return Config{}, err
+		}
+		workspaceRoots = []string{workspaceRoot}
 	}
 	config := Config{
 		RelayURL:       os.Getenv("AGENT_RELAY_URL"),
@@ -64,6 +67,14 @@ func FromEnv() (Config, error) {
 		config.LogBufferLines = lines
 	}
 	return config, nil
+}
+
+func defaultWorkspaceRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home for default workspace root: %w", err)
+	}
+	return filepath.Join(home, "work"), nil
 }
 
 func defaultRuntimeDBPath() string {

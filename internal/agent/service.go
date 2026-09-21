@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	turncontrol "github.com/codex-remote/mac-agent/internal/turn"
 )
 
 type TurnController interface {

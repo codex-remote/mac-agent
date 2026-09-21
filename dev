@@ -50,7 +50,7 @@ lock_dir="$run_dir/restart.lock"
 agent_binary="$repo_dir/bin/mac-agent"
 service_label="com.ai-coding-remote.mac-agent.$profile"
 service_target="gui/$(id -u)/$service_label"
-agent_name="leehoo-mac-$profile"
+agent_name="${CODEXREMOTE_AGENT_NAME:-codex-remote-$profile}"
 
 resolve_codex_binary() {
 	local candidate

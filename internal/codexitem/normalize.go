@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/protocol"
 )
 
 type RawItem struct {

@@ -1,6 +1,6 @@
 # Changelog
 
-AI Coding Remote Mac Agent 的重要变更记录在此文件中。
+Codex Remote Mac Agent 的重要变更记录在此文件中。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。正式发布后遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
@@ -12,6 +12,7 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 
 ### Added
 
+- Adopted Apache License 2.0, portable user-home defaults, public CI, and Dependabot updates.
 - Added WAL-backed Runtime SQLite with `agent_runs`, `result_outbox` and `bootstrap_syncs` durable state.
 - Added monotonic Agent event sequences, receipt/durable ACK handling and reconnect recovery.
 - Added in-connection replay of events that have not received a PostgreSQL durable ACK.
@@ -50,7 +51,7 @@ AI Coding Remote Mac Agent 的重要变更记录在此文件中。
 - 远程执行模型升级为 Project、Thread、Turn，协议唯一版本为 `spec_version: "2.0"`。
 - Codex 集成改为结构化 App Server JSON-RPC，不再为远程请求拼装临时 Shell 命令。
 - 文档明确 Mac Agent 只生产结构化日志；独立 Admin Platform/Collector 负责本地采集、CoreDevice 与未来 SLS 接入，采集故障不得影响 Turn。
-- Mac Agent 未显式配置工作区时默认只允许访问 `/Users/leehooo/work` 下的 Codex Desktop 项目。
+- Mac Agent 未显式配置工作区时默认只允许访问当前用户 `~/work` 下的 Codex Desktop 项目。
 - `project.list` 改为返回允许访问的 Codex Desktop 侧边栏项目，不再返回工作区内所有 Git 仓库。
 - Thread 列表优先使用 Codex Desktop 保存的项目归属，未登记的 Thread 按最具体的项目根目录归属。
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/protocol"
 )
 
 type Request struct {

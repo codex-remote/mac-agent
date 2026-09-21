@@ -1,6 +1,8 @@
-# AI Coding Remote - Mac Agent
+# Codex Remote - Mac Agent
 
-AI Coding Remote 的本地执行端。它主动连接 Relay，读取 Codex Desktop 中已经登记的本地项目，通过本地 `codex app-server` 查询会话并执行 Turn，再流式返回状态、输出与 Git 结果。
+Codex Remote 的本地执行端。它主动连接 Relay，读取 Codex Desktop 中已经登记的本地项目，通过本地 `codex app-server` 查询会话并执行 Turn，再流式返回状态、输出与 Git 结果。
+
+> Codex Remote 是独立开源项目，与 OpenAI 没有关联或背书关系。
 
 ## MVP 能力
 
@@ -84,12 +86,12 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
 
 安装、升级和 Code Mode Host 故障的快速检查见 [维修手册](docs/maintenance.md)。
 
-默认只允许访问 `/Users/leehooo/work` 下的 Codex Desktop 项目。它不会再扫描该目录寻找 Git 仓库：
+默认只允许访问当前用户 `~/work` 下的 Codex Desktop 项目。它不会扫描该目录寻找 Git 仓库：
 
 ```bash
 ./bin/mac-agent serve \
   --relay-url ws://127.0.0.1:18765/ws/agent \
-  --name leehoo-mac
+  --name developer-mac
 ```
 
 需要允许其他目录时，可以传入一个或多个根目录；第一次显式传参会清除默认值：
@@ -97,8 +99,8 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
 ```bash
 ./bin/mac-agent serve \
   --relay-url ws://127.0.0.1:18765/ws/agent \
-  --workspace-root /Users/leehooo/work/selftools \
-  --workspace-root /Users/leehooo/work/work-projects
+  --workspace-root /Users/developer/work/selftools \
+  --workspace-root /Users/developer/work/work-projects
 ```
 
 手机只能选择 Agent 返回的 `project_id`。源码查看可以附带项目相对路径；历史回答中的绝对路径仅作为兼容输入，并且必须在解析符号链接后仍位于该项目根目录内。项目必须同时存在于 Codex Desktop 的 `project-order` 中，且根目录位于允许列表内；已经从侧边栏移除但仍残留在状态文件中的项目不会返回。
@@ -130,7 +132,7 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `AGENT_RELAY_URL` | 无 | `serve` 使用的 `/ws/agent` 地址 |
-| `AGENT_WORKSPACE_ROOTS` | `/Users/leehooo/work` | Codex 项目访问允许列表；macOS 使用 `:` 分隔 |
+| `AGENT_WORKSPACE_ROOTS` | `~/work` | Codex 项目访问允许列表；macOS 使用 `:` 分隔 |
 | `AGENT_CODEX_STATE_FILE` | `$CODEX_HOME/.codex-global-state.json` 或 `~/.codex/.codex-global-state.json` | Codex Desktop 全局状态文件 |
 | `AGENT_CODEX_BINARY` | `codex` | Codex CLI 路径或命令名 |
 | `AGENT_NAME` | hostname | iPhone 展示名称 |
@@ -141,7 +143,7 @@ CODEX_BINARY=/absolute/path/to/codex ./dev simulator
 
 ```bash
 AGENT_RELAY_URL=ws://127.0.0.1:18765/ws/agent \
-AGENT_WORKSPACE_ROOTS=/Users/leehooo/work/selftools/codexremote \
+AGENT_WORKSPACE_ROOTS=/Users/developer/work/codexremote \
 ./bin/mac-agent serve
 ```
 
@@ -171,3 +173,9 @@ internal/protocol/  v2 Project/Thread/Turn 模型
 - 标准 JSONL 是服务日志生产契约；Collector、SLS 和数据库实现不得进入 Turn Controller 或 Codex Adapter。
 
 这些边界允许扩展，但不承诺预发布 Wire Protocol 向后兼容。
+
+## 开源许可
+
+本仓库采用 [Apache License 2.0](LICENSE)。贡献前请阅读组织级
+[贡献指南](https://github.com/codex-remote/.github/blob/main/CONTRIBUTING.md)；
+版权与项目名称说明见 [NOTICE](NOTICE)。

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	"github.com/ai-coding-remote/mac-agent/internal/workspace"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/workspace"
 )
 
 type testCatalog struct{ project workspace.Project }

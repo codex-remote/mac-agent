@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/codexapp"
-	"github.com/ai-coding-remote/mac-agent/internal/codexitem"
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	"github.com/ai-coding-remote/mac-agent/internal/workspace"
+	"github.com/codex-remote/mac-agent/internal/codexapp"
+	"github.com/codex-remote/mac-agent/internal/codexitem"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/workspace"
 )
 
 type ProjectCatalog interface {

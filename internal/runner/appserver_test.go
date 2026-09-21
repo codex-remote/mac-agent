@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/codexapp"
+	"github.com/codex-remote/mac-agent/internal/codexapp"
 )
 
 type fakeAppServer struct {

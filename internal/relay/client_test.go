@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
 	"github.com/coder/websocket"
+	"github.com/codex-remote/mac-agent/internal/protocol"
 )
 
 func TestClientExchangesMessages(t *testing.T) {

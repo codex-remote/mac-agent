@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	turncontrol "github.com/ai-coding-remote/mac-agent/internal/turn"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	turncontrol "github.com/codex-remote/mac-agent/internal/turn"
 )
 
 type serviceController struct {

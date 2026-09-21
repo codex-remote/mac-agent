@@ -141,7 +141,7 @@ func NewClient(reader io.Reader, writer io.Writer, closer io.Closer) *Client {
 
 func (c *Client) Initialize(ctx context.Context, name, version string) error {
 	params := map[string]any{
-		"clientInfo":   map[string]any{"name": name, "title": "AI Coding Remote Mac Agent", "version": version},
+		"clientInfo":   map[string]any{"name": name, "title": "Codex Remote Mac Agent", "version": version},
 		"capabilities": map[string]any{"experimentalApi": true},
 	}
 	var response json.RawMessage

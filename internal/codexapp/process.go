@@ -60,7 +60,7 @@ func StartProcess(parent context.Context, binary, version string, logger *slog.L
 	process.Client = NewClient(stdout, stdin, process)
 	initializeContext, initializeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer initializeCancel()
-	if err := process.Client.Initialize(initializeContext, "ai-coding-remote-mac-agent", version); err != nil {
+	if err := process.Client.Initialize(initializeContext, "codex-remote-mac-agent", version); err != nil {
 		_ = process.Close()
 		return nil, err
 	}

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
-	"github.com/ai-coding-remote/mac-agent/internal/workspace"
+	"github.com/codex-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/workspace"
 )
 
 const (

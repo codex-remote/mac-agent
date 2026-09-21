@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ai-coding-remote/mac-agent/internal/protocol"
+	"github.com/codex-remote/mac-agent/internal/protocol"
 )
 
 func TestRunOutboxSurvivesReopenUntilDurableAck(t *testing.T) {

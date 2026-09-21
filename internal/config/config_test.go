@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -35,13 +36,15 @@ func TestFromEnvUsesCodexHomeForDesktopState(t *testing.T) {
 
 func TestFromEnvUsesDefaultWorkspaceRoot(t *testing.T) {
 	t.Setenv("AGENT_WORKSPACE_ROOTS", "")
+	t.Setenv("HOME", "/Users/developer")
 
 	got, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.WorkspaceRoots) != 1 || got.WorkspaceRoots[0] != DefaultWorkspaceRoot {
-		t.Fatalf("WorkspaceRoots = %#v, want [%q]", got.WorkspaceRoots, DefaultWorkspaceRoot)
+	want := filepath.Join("/Users/developer", "work")
+	if len(got.WorkspaceRoots) != 1 || got.WorkspaceRoots[0] != want {
+		t.Fatalf("WorkspaceRoots = %#v, want [%q]", got.WorkspaceRoots, want)
 	}
 }
 
